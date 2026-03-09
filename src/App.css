@@ -1,0 +1,236 @@
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  /* 핵심: 배경을 완전히 투명하게 설정 */
+  background-color: transparent !important;
+  /* 핵심: 드래그 선택 및 기본 커서 이벤트 방지 */
+  user-select: none;
+  overflow: hidden;
+}
+
+/* 햄스터를 담는 컨테이너 컨텍스트 */
+.pet-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  /* 말풍선이 150px 창 경계 밖으로 나와야 하므로 visible 처리 */
+  overflow: visible;
+  /* 캐릭터를 하단으로 밀어냄 (150px 윈도우의 바닥에 위치) */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+/* Idle 상태 말풍선: 캐릭터 위에 표시 (투명 배경 + 아웃라인) */
+.speech-bubble {
+  position: absolute;
+  bottom: 68px; /* 캐릭터(64px) 바닥 기준 위치 */
+  left: 50%;
+  transform: translateX(-50%); /* 가로폭 확대에 맞춰 중앙 정렬 */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: transparent; /* 배경 투명화 */
+  color: #ffffff;
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 11px;
+  font-weight: bold;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  
+  /* 글자 아웃라인 (검은색 테두리 효과) */
+  text-shadow: 
+    -1px -1px 0 #000,  
+     1px -1px 0 #000,
+    -1px  1px 0 #000,
+     1px  1px 0 #000,
+     0px  1px 2px rgba(0,0,0,0.8);
+}
+
+/* 설정 창 컨테이너 */
+.settings-container {
+  padding: 24px;
+  color: #f1f1f1;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  height: 100vh;
+  box-sizing: border-box;
+  background-color: #1a1a1a;
+  overflow-y: auto; /* 내용이 많아지면 스크롤 고용 */
+}
+
+.settings-container h2 {
+  margin-top: 0;
+  margin-bottom: 24px;
+  font-size: 20px;
+  border-bottom: 1px solid #333;
+  padding-bottom: 12px;
+}
+
+.settings-section {
+  background: #252525;
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.settings-section h3 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  color: #ff4757;
+}
+
+.description {
+  font-size: 13px;
+  color: #888;
+  margin: 0 0 16px 0;
+}
+
+.test-controls-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.slider-group {
+  transition: opacity 0.3s;
+}
+
+.slider-group.disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.slider-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.value-badge {
+  background: #ff4757;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+.test-slider-large {
+  width: 100%;
+  height: 6px;
+  cursor: pointer;
+  accent-color: #ff4757;
+  border-radius: 3px;
+}
+
+.hue-slider {
+  accent-color: #54a0ff;
+}
+
+.color-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 2D 컬러 맵 컨테이너 */
+.color-picker-2d {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1; /* 정사각형 유지 */
+  border-radius: 8px;
+  cursor: crosshair;
+  overflow: hidden;
+  border: 4px solid #333;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+  
+  /* X축: 무지개 색상 (Hue) */
+  /* Y축: 아래로 갈수록 흰색 (Lightness) */
+  background: 
+    linear-gradient(to bottom, transparent, #fff),
+    linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%);
+}
+
+/* 현재 선택된 위치의 포인터 */
+.color-pointer {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #000;
+  box-shadow: 0 0 0 2px #fff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%); /* 중심 정렬 */
+  pointer-events: none; /* 클릭 방해 금지 */
+}
+
+.reset-button {
+  margin-top: 8px;
+  padding: 8px;
+  background: #333;
+  border: 1px solid #444;
+  color: #ccc;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.reset-button:hover {
+  background: #444;
+  color: #fff;
+}
+
+.stat-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 스켈레톤 도트 스프라이트 설정 */
+.skeleton {
+  /* 원본 프레임 크기(64x64)에 맞춰 64px로 설정합니다. */
+  width: 64px;
+  height: 64px;
+
+  /* 기본 이미지: 1번(맨손). 실제 run 이미지는 App.tsx에서 inline style로 교체 */
+  background-image: url('./assets/Skeleton_Default_Run_Unarmed.png');
+  background-repeat: no-repeat;
+
+  /* 프레임이 총 6장이므로, 64px 너비 기준 384px로 설정해야 1프레임당 64px이 유지됨 */
+  background-size: 384px 100%;
+
+  /* 기존에 있던 제자리 뛰기 애니메이션(run-sprite)은 App.tsx에서 Web Animations API로 직접 제어하므로 삭제 */
+
+  /* 스켈레톤의 기본 방향이 왼쪽이므로, 오른쪽으로 이동하는 윈도우에 맞추어 반전(Flip) 시킴 */
+  /* filter와 함께 사용할 때 transform이 틀어지지 않도록 최상단에 배치 */
+  transform: scaleX(-1);
+  image-rendering: pixelated; /* 도트 그래픽 선명도 유지 */
+}
+
+/* 마우스 호버 시 휴식(Idle) 모션으로 변경할 CSS 클래스 */
+.skeleton.idle {
+  background-image: url('./assets/idle.png');
+  animation: idle-sprite 1.2s steps(6) infinite !important;
+}
+
+/* 클릭 시 Hurt 모션: 2프레임(128px), 1회만 재생 */
+.skeleton.hurt {
+  background-image: url('./assets/Skeleton_Default_Hurt.png');
+  background-size: 128px 100%;
+  animation: hurt-sprite 0.4s steps(2, end) 1 forwards !important;
+}
+
+@keyframes idle-sprite {
+  from { background-position: 0px 0px; }
+  to   { background-position: -384px 0px; }
+}
+
+@keyframes hurt-sprite {
+  from { background-position: 0px 0px; }
+  to   { background-position: -128px 0px; }
+}
