@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { listen, emit } from "@tauri-apps/api/event";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
@@ -48,6 +48,8 @@ function App() {
   const skeletonRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<Animation | null>(null);
   const hurtTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const colorRafRef = useRef<number | null>(null);
+  const pendingColorRef = useRef<{hue: number, saturation: number, brightness: number} | null>(null);
 
   useEffect(() => {
     try {
@@ -96,12 +98,15 @@ function App() {
     };
   }, []);
 
-  // runVariant 및 색상 필터 변경 시 localStorage에 저장
+  // runVariant 및 색상 필터 변경 시 localStorage에 저장 (500ms 디바운스로 디스크 I/O 최소화)
   useEffect(() => {
-    localStorage.setItem('petRunVariant', String(runVariant));
-    localStorage.setItem('petHue', String(hue));
-    localStorage.setItem('petSaturation', String(saturation));
-    localStorage.setItem('petBrightness', String(brightness));
+    const timer = setTimeout(() => {
+      localStorage.setItem('petRunVariant', String(runVariant));
+      localStorage.setItem('petHue', String(hue));
+      localStorage.setItem('petSaturation', String(saturation));
+      localStorage.setItem('petBrightness', String(brightness));
+    }, 500);
+    return () => clearTimeout(timer);
   }, [runVariant, hue, saturation, brightness]);
 
   useEffect(() => {
@@ -137,6 +142,29 @@ function App() {
     setRunVariant((prev) => (prev + 1) % RUN_IMAGES.length);
   };
 
+  // 색상 업데이트 IPC를 rAF로 throttle (드래그 중 초당 60+ 회 → 프레임당 1회)
+  const scheduleColorUpdate = useCallback((h: number, s: number, b: number) => {
+    pendingColorRef.current = { hue: h, saturation: s, brightness: b };
+    if (colorRafRef.current === null) {
+      colorRafRef.current = requestAnimationFrame(() => {
+        if (pendingColorRef.current) {
+          invoke("update_pet_color", pendingColorRef.current);
+          pendingColorRef.current = null;
+        }
+        colorRafRef.current = null;
+      });
+    }
+  }, []);
+
+  // 컴포넌트 언마운트 시 pending rAF 정리
+  useEffect(() => {
+    return () => {
+      if (colorRafRef.current !== null) {
+        cancelAnimationFrame(colorRafRef.current);
+      }
+    };
+  }, []);
+
   // 테스트 모드 토글
   const handleTestModeToggle = (e: React.ChangeEvent<HTMLInputElement>) => {
     const enabled = e.target.checked;
@@ -159,138 +187,168 @@ function App() {
   else if (isHovered) skeletonClass += ' idle';
 
   // run 또는 idle 상태일 때 inline style로 이미지 및 색상 필터 적용
+  const isDefaultColor = hue === 0 && saturation === 100 && brightness === 100;
+
   const petStyle = (() => {
-    // 모든 영역에 균일하게 색을 입히기 위한 고도화된 필터 체인:
+    // 초기화 상태(기본값)이면 필터 없이 원본 이미지 그대로 표시
+    if (isDefaultColor) {
+      if (isHurt) return {};
+      if (isHovered) return { backgroundImage: `url('${IDLE_IMAGES[runVariant]}')` };
+      return { backgroundImage: `url('${RUN_IMAGES[runVariant]}')` };
+    }
+
+    // 색상 필터 체인:
     // 1. grayscale(1): 원본 색 제거
-    // 2. brightness(0.8) & contrast(1.2): 색이 잘 스며들도록 베이스 톤 조정
-    // 3. sepia(1): 채색 가능한 베이스 입히기
-    // 4. hue-rotate(hue - 40): sepia의 노란기를 상쇄하여 피커와 색상 일치 (sepia는 약 40도임)
-    // 5. saturate & brightness: 최종 색감 및 밝기 조정
-    const adjustedHue = hue - 40;
-    const filter = `grayscale(1) brightness(0.8) contrast(1.2) sepia(1) hue-rotate(${adjustedHue}deg) saturate(${saturation * 2}%) brightness(${brightness / 80})`;
-    
+    // 2. sepia(1): 채색 가능한 베이스 입히기
+    // 3. hue-rotate(hue - 50): sepia 기본색(~50도)을 상쇄하여 피커 색상과 일치
+    // 4. saturate: 채도 강하게 적용
+    // 5. brightness: 최종 밝기 조정
+    const adjustedHue = hue - 50;
+    const filter = `grayscale(1) sepia(1) hue-rotate(${adjustedHue}deg) saturate(${saturation * 4}%) brightness(${brightness / 100})`;
+
     if (isHurt) return { filter };
     if (isHovered) return { backgroundImage: `url('${IDLE_IMAGES[runVariant]}')`, filter };
     return { backgroundImage: `url('${RUN_IMAGES[runVariant]}')`, filter };
   })();
 
+  const [settingsTab, setSettingsTab] = useState<string>("test");
+
   if (windowLabel === "settings") {
     return (
-      <div className="settings-container">
-        <h2>환경 설정</h2>
-        <div className="settings-section">
-          <h3>테스트 모드</h3>
-          <p className="description">실제 CPU 사용률 대신 수동으로 설정한 값을 사용합니다.</p>
-          <div className="test-controls-vertical">
-            <label className="test-toggle">
-              <input 
-                type="checkbox" 
-                checked={isTestMode} 
-                onChange={handleTestModeToggle} 
-              />
-              <span>테스트 모드 활성화</span>
-            </label>
-            <div className={isTestMode ? "slider-group" : "slider-group disabled"}>
-              <div className="slider-header">
-                <span>가상 CPU 부하</span>
-                <span className="value-badge">{testCpuValue}%</span>
+      <div className="settings-layout">
+        <nav className="settings-sidebar">
+          <h2 className="sidebar-title">설정</h2>
+          <ul className="sidebar-menu">
+            <li>
+              <button
+                className={`sidebar-item ${settingsTab === "test" ? "active" : ""}`}
+                onClick={() => setSettingsTab("test")}
+              >
+                테스트 모드
+              </button>
+            </li>
+            <li>
+              <button
+                className={`sidebar-item ${settingsTab === "color" ? "active" : ""}`}
+                onClick={() => setSettingsTab("color")}
+              >
+                펫 색상
+              </button>
+            </li>
+          </ul>
+        </nav>
+        <main className="settings-content">
+          {settingsTab === "test" && (
+            <div className="settings-section">
+              <h3>테스트 모드</h3>
+              <p className="description">실제 CPU 사용률 대신 수동으로 설정한 값을 사용합니다.</p>
+              <div className="test-controls-vertical">
+                <label className="test-toggle">
+                  <input
+                    type="checkbox"
+                    checked={isTestMode}
+                    onChange={handleTestModeToggle}
+                  />
+                  <span>테스트 모드 활성화</span>
+                </label>
+                <div className={isTestMode ? "slider-group" : "slider-group disabled"}>
+                  <div className="slider-header">
+                    <span>가상 CPU 부하</span>
+                    <span className="value-badge">{testCpuValue}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={testCpuValue}
+                    onChange={handleTestCpuChange}
+                    disabled={!isTestMode}
+                    className="test-slider-large"
+                  />
+                </div>
               </div>
-              <input 
-                type="range" 
-                min="0" 
-                max="100" 
-                value={testCpuValue} 
-                onChange={handleTestCpuChange}
-                disabled={!isTestMode}
-                className="test-slider-large"
-              />
             </div>
-          </div>
-        </div>
+          )}
 
-        <div className="settings-section">
-          <h3>펫 색상 커스텀</h3>
-          <p className="description">SVG 필터를 활용해 펫의 색상을 자유롭게 변경합니다.</p>
-          
-          <div className="color-controls">
-            {/* 2D 컬러 피커 */}
-            <div 
-              className="color-picker-2d"
-              onMouseDown={(e) => {
-                const handleMove = (moveEvent: MouseEvent) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const x = Math.max(0, Math.min(moveEvent.clientX - rect.left, rect.width));
-                  const y = Math.max(0, Math.min(moveEvent.clientY - rect.top, rect.height));
-                  
-                  const newHue = Math.round((x / rect.width) * 360);
-                  // Y축이 아래로 갈수록 흰색이 되도록 설계됨 (Saturation 감소 혹은 Brightness 증가)
-                  // 사용자 이미지의 경우 아래가 흰색이므로, Y가 커질수록 Saturation은 낮아지거나 Brightness가 높아짐
-                  // 여기서는 Y축을 Saturation(100 -> 0)으로 매핑
-                  const newSaturation = Math.round(100 - (y / rect.height) * 100);
-                  
-                  setHue(newHue);
-                  setSaturation(newSaturation);
-                  invoke("update_pet_color", { hue: newHue, saturation: newSaturation, brightness });
-                };
+          {settingsTab === "color" && (
+            <div className="settings-section">
+              <h3>펫 색상 커스텀</h3>
+              <p className="description">SVG 필터를 활용해 펫의 색상을 자유롭게 변경합니다.</p>
 
-                const handleUp = () => {
-                  window.removeEventListener('mousemove', handleMove);
-                  window.removeEventListener('mouseup', handleUp);
-                };
+              <div className="color-controls">
+                {/* 2D 컬러 피커 */}
+                <div
+                  className="color-picker-2d"
+                  onMouseDown={(e) => {
+                    // rect를 mousedown 시점에 한 번만 캡처 (mousemove에서 e.currentTarget 참조 버그 방지)
+                    const rect = e.currentTarget.getBoundingClientRect();
 
-                window.addEventListener('mousemove', handleMove);
-                window.addEventListener('mouseup', handleUp);
-                
-                // 첫 클릭 지점도 반영
-                const rect = e.currentTarget.getBoundingClientRect();
-                const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-                const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
-                const newHue = Math.round((x / rect.width) * 360);
-                const newSaturation = Math.round(100 - (y / rect.height) * 100);
-                setHue(newHue);
-                setSaturation(newSaturation);
-                invoke("update_pet_color", { hue: newHue, saturation: newSaturation, brightness });
-              }}
-            >
-              {/* 현재 선택 위치 표시 포인터 */}
-              <div 
-                className="color-pointer"
-                style={{
-                  left: `${(hue / 360) * 100}%`,
-                  top: `${(1 - (saturation / 100)) * 100}%`
-                }}
-              ></div>
-            </div>
+                    const calcAndApply = (clientX: number, clientY: number) => {
+                      const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+                      const y = Math.max(0, Math.min(clientY - rect.top, rect.height));
+                      const newHue = Math.round((x / rect.width) * 360);
+                      const newSaturation = Math.round(100 - (y / rect.height) * 100);
+                      setHue(newHue);
+                      setSaturation(newSaturation);
+                      scheduleColorUpdate(newHue, newSaturation, brightness);
+                    };
 
-            <div className="slider-group">
-              <div className="slider-header">
-                <span>추가 밝기 보정 (Brightness)</span>
-                <span className="value-badge">{brightness}%</span>
+                    const handleMove = (moveEvent: MouseEvent) => {
+                      calcAndApply(moveEvent.clientX, moveEvent.clientY);
+                    };
+
+                    const handleUp = () => {
+                      window.removeEventListener('mousemove', handleMove);
+                      window.removeEventListener('mouseup', handleUp);
+                    };
+
+                    window.addEventListener('mousemove', handleMove);
+                    window.addEventListener('mouseup', handleUp);
+
+                    // 첫 클릭 지점 반영
+                    calcAndApply(e.clientX, e.clientY);
+                  }}
+                >
+                  <div
+                    className="color-pointer"
+                    style={{
+                      left: `${(hue / 360) * 100}%`,
+                      top: `${(1 - (saturation / 100)) * 100}%`
+                    }}
+                  ></div>
+                </div>
+
+                <div className="slider-group">
+                  <div className="slider-header">
+                    <span>추가 밝기 보정 (Brightness)</span>
+                    <span className="value-badge">{brightness}%</span>
+                  </div>
+                  <input
+                    type="range" min="0" max="200" value={brightness}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setBrightness(val);
+                      scheduleColorUpdate(hue, saturation, val);
+                    }}
+                    className="test-slider-large"
+                  />
+                </div>
+
+                <button
+                  className="reset-button"
+                  onClick={() => {
+                    setHue(0);
+                    setSaturation(100);
+                    setBrightness(100);
+                    invoke("update_pet_color", { hue: 0, saturation: 100, brightness: 100 }); // 초기화는 즉시 반영
+                  }}
+                >
+                  초기화
+                </button>
               </div>
-              <input 
-                type="range" min="0" max="200" value={brightness} 
-                onChange={(e) => {
-                  const val = Number(e.target.value);
-                  setBrightness(val);
-                  invoke("update_pet_color", { hue, saturation, brightness: val });
-                }}
-                className="test-slider-large"
-              />
             </div>
-
-            <button 
-              className="reset-button"
-              onClick={() => {
-                setHue(0);
-                setSaturation(100);
-                setBrightness(100);
-                invoke("update_pet_color", { hue: 0, saturation: 100, brightness: 100 });
-              }}
-            >
-              색상 초기화
-            </button>
-          </div>
-        </div>
+          )}
+        </main>
       </div>
     );
   }

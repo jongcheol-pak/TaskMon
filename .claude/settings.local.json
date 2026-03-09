@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PATH=\"$PATH:/c/Users/jongcheol/.cargo/bin\")",
+      "Bash(export VCToolsVersion=14.44.35207)",
+      "Bash(npm run tauri:*)",
+      "Bash(netstat:*)",
+      "Bash(npx tsc:*)",
+      "Bash(tasklist:*)",
+      "Bash(export:*)"
+    ]
+  }
+}

@@ -1,13 +1,15 @@
-use tauri::{AppHandle, Manager, Emitter, State};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::sync::atomic::{AtomicU32, AtomicBool, AtomicI64, AtomicI32, Ordering};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 한 번의 EnumWindows 순회로 여러 모니터의 전체화면 여부를 동시에 체크
 /// monitors 슬라이스와 같은 길이의 bool 배열 반환 (인덱스 대응)
 /// N번 호출 → 1번으로 줄여 API 오버헤드 감소
 #[cfg(target_os = "windows")]
 fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
-    if monitors.is_empty() { return Vec::new(); }
+    if monitors.is_empty() {
+        return Vec::new();
+    }
 
     #[link(name = "user32")]
     extern "system" {
@@ -23,7 +25,7 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
 
     // 확장 스타일 상수
     const GWL_EXSTYLE: i32 = -20;
-    const WS_EX_LAYERED: u32    = 0x00080000; // 투명/레이어드 창 (오버레이 앱)
+    const WS_EX_LAYERED: u32 = 0x00080000; // 투명/레이어드 창 (오버레이 앱)
     const WS_EX_TOOLWINDOW: u32 = 0x00000080; // 도구 창 (ALT+TAB 미표시 플로팅 창)
 
     // EnumWindows 콜백 컨텍스트 (모니터 목록과 결과 배열을 raw ptr로 공유)
@@ -36,13 +38,17 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
     unsafe extern "system" fn enum_proc(hwnd: isize, lparam: isize) -> i32 {
         let ctx = &*(lparam as *const Ctx);
 
-        if IsWindowVisible(hwnd) == 0 { return 1; }
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
 
         // 시스템 창 제외 (바탕화면, 작업표시줄, UWP 시스템 UI)
         let mut cls = [0u16; 64];
         GetClassNameW(hwnd, cls.as_mut_ptr(), 64);
         fn cls_eq(buf: &[u16], name: &[u8]) -> bool {
-            name.iter().enumerate().all(|(i, &b)| buf.get(i).copied() == Some(b as u16))
+            name.iter()
+                .enumerate()
+                .all(|(i, &b)| buf.get(i).copied() == Some(b as u16))
                 && buf.get(name.len()).copied() == Some(0)
         }
         if cls_eq(&cls, b"Progman")
@@ -62,7 +68,9 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
         }
 
         let mut r = [0i32; 4];
-        if GetWindowRect(hwnd, &mut r) == 0 { return 1; }
+        if GetWindowRect(hwnd, &mut r) == 0 {
+            return 1;
+        }
 
         // 이 창이 덮는 모니터 표시 (한 번에 여러 모니터 처리)
         let monitors = std::slice::from_raw_parts(ctx.monitors, ctx.count);
@@ -76,10 +84,16 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
                     fullscreen[i] = true;
                 }
             }
-            if !fullscreen[i] { all_found = false; }
+            if !fullscreen[i] {
+                all_found = false;
+            }
         }
         // 모든 모니터가 전체화면으로 확정되면 조기 종료
-        if all_found { 0 } else { 1 }
+        if all_found {
+            0
+        } else {
+            1
+        }
     }
 
     let mut result = vec![false; monitors.len()];
@@ -106,21 +120,58 @@ struct MonitorInfo {
     width: i32,
     height: i32,
     scale_factor: f64,
+    work_bottom: i32, // 작업영역 하단 Y 절대좌표 (물리 픽셀) = 작업표시줄 상단
+}
+
+/// 모니터별 작업영역(work area)을 Win32 API로 조회하여 작업표시줄 높이를 정확히 산출
+#[cfg(target_os = "windows")]
+fn get_work_area_for_monitor(monitor_x: i32, monitor_y: i32) -> Option<[i32; 4]> {
+    #[link(name = "user32")]
+    extern "system" {
+        fn MonitorFromPoint(pt_x: i32, pt_y: i32, flags: u32) -> isize;
+        fn GetMonitorInfoW(hmonitor: isize, lpmi: *mut MonitorInfoW) -> i32;
+    }
+
+    #[repr(C)]
+    struct MonitorInfoW {
+        cb_size: u32,
+        rc_monitor: [i32; 4],
+        rc_work: [i32; 4],
+        dw_flags: u32,
+    }
+
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    unsafe {
+        let hmon = MonitorFromPoint(monitor_x + 1, monitor_y + 1, MONITOR_DEFAULTTONEAREST);
+        if hmon == 0 {
+            return None;
+        }
+        let mut mi = MonitorInfoW {
+            cb_size: std::mem::size_of::<MonitorInfoW>() as u32,
+            rc_monitor: [0; 4],
+            rc_work: [0; 4],
+            dw_flags: 0,
+        };
+        if GetMonitorInfoW(hmon, &mut mi) == 0 {
+            return None;
+        }
+        Some(mi.rc_work) // [left, top, right, bottom]
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_work_area_for_monitor(_monitor_x: i32, _monitor_y: i32) -> Option<[i32; 4]> {
+    None
 }
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem},
+    menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
 
 struct AppState {
     is_hovered: Arc<Mutex<bool>>,
     test_cpu: Arc<AtomicI32>,
-}
-
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
 #[tauri::command]
@@ -131,25 +182,27 @@ fn set_hover(state: State<'_, AppState>, hovered: bool) {
 }
 
 #[tauri::command]
-fn set_test_cpu(app: AppHandle, state: State<'_, AppState>, usage: i32) {
+fn set_test_cpu(state: State<'_, AppState>, usage: i32) {
     state.test_cpu.store(usage, Ordering::Relaxed);
-    // (설정 창으로 기능을 옮겼으므로 트레이 메뉴 재빌드 불필요)
 }
 
 #[tauri::command]
 fn update_pet_color(app: AppHandle, hue: i32, saturation: i32, brightness: i32) {
-    let _ = app.emit("color-update", serde_json::json!({
-        "hue": hue,
-        "saturation": saturation,
-        "brightness": brightness
-    }));
+    let _ = app.emit(
+        "color-update",
+        serde_json::json!({
+            "hue": hue,
+            "saturation": saturation,
+            "brightness": brightness
+        }),
+    );
 }
 
 /// 현재 실행 상태에 따라 트레이 메뉴를 동적으로 빌드
 fn build_tray_menu(app: &AppHandle, running: bool) -> tauri::Result<Menu<tauri::Wry>> {
     let quit_i = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
     let settings_i = MenuItem::with_id(app, "settings", "설정", true, None::<&str>)?;
-    
+
     if running {
         let stop_i = MenuItem::with_id(app, "stop", "중지", true, None::<&str>)?;
         Menu::with_items(app, &[&settings_i, &stop_i, &quit_i])
@@ -179,8 +232,6 @@ pub fn run() {
 
     // setup 클로저(move)에 넘길 clone 미리 준비
     let is_running_tray = Arc::clone(&is_running);
-    let _is_running_t1   = Arc::clone(&is_running);
-    let _is_running_t2   = Arc::clone(&is_running);
     let shared_pet_x_t1 = Arc::clone(&shared_pet_x);
     let shared_pet_x_t2 = Arc::clone(&shared_pet_x);
     let avail_monitors_t1 = Arc::clone(&shared_avail_monitors);
@@ -208,14 +259,18 @@ pub fn run() {
                                 if let Some(w) = app.get_webview_window("settings") {
                                     let _ = w.set_focus();
                                 } else {
-                                    let _ = tauri::webview::WebviewWindowBuilder::new(app, "settings", tauri::WebviewUrl::App("index.html".into()))
-                                        .title("설정")
-                                        .inner_size(400.0, 550.0)
-                                        .decorations(true)
-                                        .resizable(true)
-                                        .center()
-                                        .skip_taskbar(false) // 설정 창은 작업표시줄에 표시
-                                        .build();
+                                    let _ = tauri::webview::WebviewWindowBuilder::new(
+                                        app,
+                                        "settings",
+                                        tauri::WebviewUrl::App("index.html".into()),
+                                    )
+                                    .title("설정")
+                                    .inner_size(640.0, 600.0)
+                                    .decorations(true)
+                                    .resizable(true)
+                                    .center()
+                                    .skip_taskbar(false) // 설정 창은 작업표시줄에 표시
+                                    .build();
                                 }
                             }
                             "quit" => {
@@ -262,23 +317,38 @@ pub fn run() {
 
             // Get the main window
             let window = app.get_webview_window("main").unwrap();
-            
+
             // Get screen details to know when to wrap around
             // Use logical size and position for consistent cross-DPI behavior
             let monitor = window.primary_monitor().unwrap().unwrap();
             let scale_factor = window.scale_factor().unwrap_or(1.0);
-            
-            // Set initial window size (width 120 for bubble space, height 150)
-            window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                width: 120.0,
-                height: 150.0, // Height increased for speech bubble space
-            })).expect("Failed to set window size");
 
-            // Position window at the bottom of the primary monitor
-            // Calculate position to snap to bottom (leaving taskbar margin if needed)
-            let window_height = 150.0; // Same as above
-            let y = (monitor.size().height as f64 / scale_factor) - window_height - 40.0; // Approx taskbar height
-            window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x: 0.0, y })).unwrap();
+            // Set initial window size (width 120 for bubble space, height 150)
+            window
+                .set_size(tauri::Size::Logical(tauri::LogicalSize {
+                    width: 120.0,
+                    height: 150.0, // Height increased for speech bubble space
+                }))
+                .expect("Failed to set window size");
+
+            // 초기 위치: 실제 작업영역(work area) 하단에 맞춤
+            let mon_x = monitor.position().x;
+            let mon_y = monitor.position().y;
+            let mon_h = monitor.size().height as i32;
+            let work_bottom = get_work_area_for_monitor(mon_x, mon_y)
+                .map(|rc| rc[3])
+                .unwrap_or(mon_y + mon_h);
+            // set_size 후 실제 물리 높이 조회 (150 * scale 추정값 대신 OS가 보고하는 정확한 값)
+            let actual_init_h = window
+                .outer_size()
+                .map(|s| s.height as i32)
+                .unwrap_or((150.0 * scale_factor) as i32);
+            let initial_y = work_bottom - actual_init_h;
+            window
+                .set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition::new(0, initial_y),
+                ))
+                .unwrap();
 
             // 작업 표시줄 아이콘 숨기기 (tauri.conf.json의 skipTaskbar와 함께 이중 적용)
             let _ = window.set_skip_taskbar(true);
@@ -287,32 +357,48 @@ pub fn run() {
 
             let window_clone = window.clone(); // Clone for the thread
             let mut current_x = 0.0;
-            
+
             // Get initial min_x to start from the far left monitor
             if let Ok(monitors) = window.available_monitors() {
                 let mut min_x = i32::MAX;
                 for m in monitors {
-                    if m.position().x < min_x { min_x = m.position().x; }
+                    if m.position().x < min_x {
+                        min_x = m.position().x;
+                    }
                 }
-                if min_x != i32::MAX { current_x = min_x as f64 - 100.0; }
+                if min_x != i32::MAX {
+                    current_x = min_x as f64 - 100.0;
+                }
             }
-            
+
             let mut last_update = std::time::Instant::now();
 
             // 글로벌 공유 CPU 상태 (f32를 원자적으로 다루기 위해 bits 변환해서 AtomicU32 사용)
             let shared_cpu_usage = Arc::new(AtomicU32::new(0f32.to_bits()));
             // 추가: 글로벌 공유 모니터 정보 캐시 (1초 갱신)
             let shared_monitors = Arc::new(RwLock::new(Vec::<MonitorInfo>::new()));
-            
+
             // 초기 모니터 정보 캐싱 + avail_monitors도 초기화(첫 1초 동안 이동 가능하도록)
             if let Ok(monitors) = window_clone.available_monitors() {
-                let info_list: Vec<MonitorInfo> = monitors.iter().map(|m| MonitorInfo {
-                    x: m.position().x,
-                    y: m.position().y,
-                    width: m.size().width as i32,
-                    height: m.size().height as i32,
-                    scale_factor: m.scale_factor(),
-                }).collect();
+                let info_list: Vec<MonitorInfo> = monitors
+                    .iter()
+                    .map(|m| {
+                        let x = m.position().x;
+                        let y = m.position().y;
+                        let height = m.size().height as i32;
+                        let work_bottom = get_work_area_for_monitor(x, y)
+                            .map(|rc| rc[3]) // 작업영역 하단 절대 Y좌표
+                            .unwrap_or(y + height);
+                        MonitorInfo {
+                            x,
+                            y,
+                            width: m.size().width as i32,
+                            height,
+                            scale_factor: m.scale_factor(),
+                            work_bottom,
+                        }
+                    })
+                    .collect();
                 // shared_monitors 초기화
                 if let Ok(mut cache) = shared_monitors.write() {
                     *cache = info_list.clone();
@@ -322,19 +408,20 @@ pub fn run() {
                     *cache = info_list;
                 }
             }
-            
+
             // --- Thread 1: CPU 폴링 & 모니터 스캔 (1초에 1번) ---
             // 중지 상태일 때는 sleep만 하고 실제 폴링/이벤트 전송을 건너뜀 → CPU 점유 없음
             let cpu_usage_clone = Arc::clone(&shared_cpu_usage);
             let monitors_clone = Arc::clone(&shared_monitors);
             let window_clone_evt = window.clone();
             let is_running_t1 = Arc::clone(&is_running);
-            let pet_x_reader  = Arc::clone(&shared_pet_x_t1);
+            let pet_x_reader = Arc::clone(&shared_pet_x_t1);
             let avail_mons_writer = Arc::clone(&avail_monitors_t1);
             std::thread::spawn(move || {
-                let mut sys = sysinfo::System::new(); // new_all() 대신 new()로 초경량화
-                sys.refresh_memory(); // 초기 1회 메모리 로드
-                
+                let mut sys = sysinfo::System::new();
+                sys.refresh_memory();
+                let mut prev_on_fullscreen = false; // set_always_on_top 중복 호출 방지
+
                 loop {
                     // 중지 상태: 500ms 대기 후 다음 루프 (CPU/메모리 점유 없음)
                     if !is_running_t1.load(Ordering::Relaxed) {
@@ -351,44 +438,48 @@ pub fn run() {
                         0.0
                     };
 
-                    // 메모리 폴링 (CPU와 동일 주기, 추가 크레이트 없음)
+                    // 메모리 폴링
                     sys.refresh_memory();
                     let total_mem = sys.total_memory();
-                    let used_mem  = sys.used_memory();
+                    let used_mem = sys.used_memory();
                     let mem_pct = if total_mem > 0 {
                         (used_mem as f64 / total_mem as f64 * 100.0).round() as u32
                     } else {
                         0
                     };
 
-                    // 공유 변수에 기록 (f32 -> u32 bits)
                     cpu_usage_clone.store(usage.to_bits(), Ordering::Relaxed);
-                    
+
                     // 2. 모니터 정보 갱신 (1초마다 OS에 질의)
                     if let Ok(m_list) = window_clone_evt.available_monitors() {
-                        let mut cache = monitors_clone.write().unwrap();
-                        cache.clear();
-                        for m in m_list {
-                            cache.push(MonitorInfo {
-                                x: m.position().x,
-                                y: m.position().y,
-                                width: m.size().width as i32,
-                                height: m.size().height as i32,
-                                scale_factor: m.scale_factor(),
-                            });
+                        if let Ok(mut cache) = monitors_clone.write() {
+                            cache.clear();
+                            for m in m_list {
+                                let mx = m.position().x;
+                                let my = m.position().y;
+                                let mh = m.size().height as i32;
+                                let work_bottom = get_work_area_for_monitor(mx, my)
+                                    .map(|rc| rc[3])
+                                    .unwrap_or(my + mh);
+                                cache.push(MonitorInfo {
+                                    x: mx,
+                                    y: my,
+                                    width: m.size().width as i32,
+                                    height: mh,
+                                    scale_factor: m.scale_factor(),
+                                    work_bottom,
+                                });
+                            }
                         }
                     }
-                    
-                    // 모든 모니터 전체화면 여부를 단 1번의 EnumWindows 순회로 처리
+
                     // monitors 락을 짧게 잡아 스냅샷 복사 → 락 해제 후 EnumWindows 실행
-                    let monitors_snapshot = monitors_clone.read()
-                        .map(|g| g.clone())
-                        .unwrap_or_default();
+                    let monitors_snapshot =
+                        monitors_clone.read().map(|g| g.clone()).unwrap_or_default();
 
                     let pet_x = pet_x_reader.load(Ordering::Relaxed);
-                    let center_x = pet_x + 60; // Adjusted for 120px window width
+                    let center_x = pet_x + 60;
 
-                    // 단일 EnumWindows 호출로 모든 모니터 결과 획득 (최적화 핵심)
                     let fs_flags = check_fullscreen_all(&monitors_snapshot);
 
                     let mut avail = Vec::with_capacity(monitors_snapshot.len());
@@ -402,15 +493,16 @@ pub fn run() {
                         }
                     }
 
-                    // alwaysOnTop: pet이 전체화면 모니터 위에 있을 때만 해제
-                    let _ = window_clone_evt.set_always_on_top(!pet_on_fullscreen);
+                    // alwaysOnTop: 상태가 변경될 때만 Win32 API 호출 (매초 호출 방지)
+                    if pet_on_fullscreen != prev_on_fullscreen {
+                        let _ = window_clone_evt.set_always_on_top(!pet_on_fullscreen);
+                        prev_on_fullscreen = pet_on_fullscreen;
+                    }
 
-                    // 이동 가능한 모니터 목록 갱신 (Thread 2 이동 제한에 사용)
                     if let Ok(mut cache) = avail_mons_writer.write() {
                         *cache = avail;
                     }
 
-                    // React 프론트로 1초마다 안정적으로 이벤트 전송
                     let _ = window_clone_evt.emit("cpu-usage", usage);
                     let _ = window_clone_evt.emit("memory-usage", mem_pct);
 
@@ -423,17 +515,23 @@ pub fn run() {
             let cpu_usage_reader = Arc::clone(&shared_cpu_usage);
             let avail_monitors_reader = Arc::clone(&avail_monitors_t2);
             let is_running_t2 = Arc::clone(&is_running);
-            let pet_x_writer  = Arc::clone(&shared_pet_x_t2);
-            let test_cpu_t2   = Arc::clone(&test_cpu);
+            let pet_x_writer = Arc::clone(&shared_pet_x_t2);
+            let test_cpu_t2 = Arc::clone(&test_cpu);
+            // 윈도우 실제 물리 크기를 한 번 측정 (150 * scale 추정값 대신 정확한 값 사용)
+            let actual_win_h = window_clone
+                .outer_size()
+                .map(|s| s.height as i32)
+                .unwrap_or((150.0 * scale_factor) as i32);
             std::thread::spawn(move || {
                 loop {
-                    std::thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS update rate for smooth window movement
-
-                    // 중지 상태: 루프는 돌지만 실제 이동 로직 없음 → 사실상 idle
+                    // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
                     if !is_running_t2.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
                         continue;
                     }
-                    
+
+                    std::thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
+
                     // 공유 메모리에서 읽기만 수행 (매우 빠름, lock 없음)
                     let current_cpu = {
                         let t = test_cpu_t2.load(Ordering::Relaxed);
@@ -443,14 +541,14 @@ pub fn run() {
                             f32::from_bits(cpu_usage_reader.load(Ordering::Relaxed))
                         }
                     };
-                    
+
                     // Calc movement
                     let now = std::time::Instant::now();
                     let delta_time = now.duration_since(last_update).as_secs_f64();
                     last_update = now;
-                    
+
                     let mut speed_multiplier = 1.0 + (current_cpu as f64 / 10.0);
-                    
+
                     // IF hovered, stop movement completely
                     if let Ok(hovered) = thread_hover_state.lock() {
                         if *hovered {
@@ -466,31 +564,32 @@ pub fn run() {
                             let mut current_scale = 1.0;
                             let mut target_y = 0;
                             let mut found_monitor = false;
-                            
+
                             // Use the center of the window (approx 60px scaled) to determine which monitor we are on.
                             let center_x = current_x + 60.0;
-                            
+
                             // Find the total span and which monitor we are currently on
                             for m in monitors.iter() {
                                 let px = m.x;
-                                let py = m.y;
                                 let pw = m.width;
-                                let ph = m.height;
                                 let scale = m.scale_factor;
-                                
-                                if px < min_x { min_x = px; }
-                                if px + pw > max_x { max_x = px + pw; }
-                                
+
+                                if px < min_x {
+                                    min_x = px;
+                                }
+                                if px + pw > max_x {
+                                    max_x = px + pw;
+                                }
+
                                 // If the pet's CENTER X is within this monitor's X bounds
                                 if center_x >= (px as f64) && center_x <= ((px + pw) as f64) {
                                     current_scale = scale;
-                                    let physical_win_h = (150.0 * scale) as i32;
-                                    let physical_margin = (40.0 * scale) as i32; // Taskbar margin
-                                    target_y = py + ph - physical_win_h - physical_margin;
+                                    // work_bottom: Win32 절대 Y좌표, actual_win_h: 실제 윈도우 물리 높이
+                                    target_y = m.work_bottom - actual_win_h;
                                     found_monitor = true;
                                 }
                             }
-                            
+
                             // Fallback bounds
                             if min_x == i32::MAX {
                                 min_x = 0;
@@ -509,30 +608,31 @@ pub fn run() {
                             if current_x > max_x as f64 || current_x < (min_x as f64 - 200.0) {
                                 current_x = min_x as f64 - 100.0;
                             }
-                            
+
                             // 공중에 떠버린 미아 모니터 처리 (발생 시 1번 모니터로 강제 소환)
-                             if !found_monitor {
+                            if !found_monitor {
                                 if let Some(pm) = monitors.first() {
-                                    let scale = pm.scale_factor;
-                                    target_y = pm.y + pm.height - (150.0 * scale) as i32 - (40.0 * scale) as i32;
+                                    target_y = pm.work_bottom - actual_win_h;
                                 }
                                 // 베젤(모니터 여백)을 지날 때는 찾지 못할 수 있으므로 강제 x 워프는 제거함 (자연스럽게 넘어가도록 둠)
                             }
 
                             // Apply absolute Physical position
-                            let _ = window_clone.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
-                                current_x as i32, 
-                                target_y
-                            )));
+                            let _ = window_clone.set_position(tauri::Position::Physical(
+                                tauri::PhysicalPosition::new(current_x as i32, target_y),
+                            ));
                         }
                     }
                 }
             });
 
             Ok(())
-
         })
-        .invoke_handler(tauri::generate_handler![greet, set_hover, set_test_cpu, update_pet_color])
+        .invoke_handler(tauri::generate_handler![
+            set_hover,
+            set_test_cpu,
+            update_pet_color
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -53,23 +53,78 @@ body,
      0px  1px 2px rgba(0,0,0,0.8);
 }
 
-/* 설정 창 컨테이너 */
-.settings-container {
-  padding: 24px;
+/* 설정 창 레이아웃: 좌측 메뉴 + 우측 콘텐츠 */
+.settings-layout {
+  display: flex;
+  height: 100vh;
   color: #f1f1f1;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  height: 100vh;
-  box-sizing: border-box;
   background-color: #1a1a1a;
-  overflow-y: auto; /* 내용이 많아지면 스크롤 고용 */
+  box-sizing: border-box;
 }
 
-.settings-container h2 {
-  margin-top: 0;
-  margin-bottom: 24px;
-  font-size: 20px;
-  border-bottom: 1px solid #333;
-  padding-bottom: 12px;
+/* 좌측 사이드바 */
+.settings-sidebar {
+  width: 160px;
+  min-width: 160px;
+  background-color: #141414;
+  border-right: 1px solid #2a2a2a;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 0;
+}
+
+.sidebar-title {
+  margin: 0;
+  padding: 0 16px 16px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #f1f1f1;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.sidebar-menu {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0;
+}
+
+.sidebar-menu li {
+  margin: 0;
+}
+
+.sidebar-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 14px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-item:hover {
+  background: #222;
+  color: #f1f1f1;
+}
+
+.sidebar-item.active {
+  background: #252525;
+  color: #ff4757;
+  font-weight: 600;
+  border-left: 3px solid #ff4757;
+  padding-left: 13px;
+}
+
+/* 우측 콘텐츠 영역 */
+.settings-content {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
 }
 
 .settings-section {
