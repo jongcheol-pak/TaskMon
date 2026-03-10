@@ -13,7 +13,7 @@
     "windows": [
       {
         "title": "my-pet",
-        "width": 60,
+        "width": 200,
         "height": 60,
         "transparent": true,
         "decorations": false,

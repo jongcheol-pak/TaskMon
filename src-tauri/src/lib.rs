@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -113,6 +113,10 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
     vec![false; monitors.len()]
 }
 
+// 윈도우 논리 크기 상수 (set_size에서 Logical으로 설정하는 값)
+const LOGICAL_WIN_W: f64 = 200.0;
+const LOGICAL_WIN_H: f64 = 150.0;
+
 #[derive(Clone, Default)]
 struct MonitorInfo {
     x: i32,
@@ -172,6 +176,48 @@ use tauri::{
 struct AppState {
     is_hovered: Arc<Mutex<bool>>,
     test_cpu: Arc<AtomicI32>,
+    polling_interval_ms: Arc<AtomicU64>,
+}
+
+/// 메시지 조건 항목 (messages.json의 각 항목)
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct PetMessage {
+    target: String,
+    condition: String,
+    value: f64,
+    priority: i32,
+    text: String,
+}
+
+/// messages.json 최상위 구조
+#[derive(serde::Deserialize)]
+struct MessagesConfig {
+    messages: Vec<PetMessage>,
+}
+
+/// 실행 파일과 같은 경로의 messages.json을 읽어 반환
+/// 파일이 없거나 파싱 오류 시 빈 배열 반환 → 프론트엔드에서 메시지 미표시
+#[tauri::command]
+fn load_messages() -> Vec<PetMessage> {
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let exe_dir = match exe_path.parent() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+    let messages_path = exe_dir.join("messages.json");
+
+    let content = match std::fs::read_to_string(&messages_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    match serde_json::from_str::<MessagesConfig>(&content) {
+        Ok(config) => config.messages,
+        Err(_) => Vec::new(),
+    }
 }
 
 #[tauri::command]
@@ -194,6 +240,30 @@ fn update_pet_color(app: AppHandle, hue: i32, saturation: i32, brightness: i32) 
             "hue": hue,
             "saturation": saturation,
             "brightness": brightness
+        }),
+    );
+}
+
+#[tauri::command]
+fn set_polling_interval(state: State<'_, AppState>, seconds: u64) {
+    let ms = if seconds == 0 { 1000 } else { seconds * 1000 };
+    state.polling_interval_ms.store(ms, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn update_bubble_enabled(app: AppHandle, enabled: bool) {
+    let _ = app.emit("bubble-enabled-update", enabled);
+}
+
+#[tauri::command]
+fn update_monitor_config(app: AppHandle, cpu: bool, memory: bool, network: bool, battery: bool) {
+    let _ = app.emit(
+        "monitor-config-update",
+        serde_json::json!({
+            "cpu": cpu,
+            "memory": memory,
+            "network": network,
+            "battery": battery
         }),
     );
 }
@@ -224,6 +294,9 @@ pub fn run() {
     // 테스트용 CPU 값: -1 = 실제 시스템 값 사용, 0~100 = 테스트 값 사용
     let test_cpu = Arc::new(AtomicI32::new(-1));
 
+    // 폴링 간격 (밀리초): 기본 1초
+    let polling_interval_ms = Arc::new(AtomicU64::new(1000));
+
     // 캐릭터의 현재 물리 X 좌표를 Thread 2 → Thread 1 방향으로 공유 (전체화면 감지에 사용)
     let shared_pet_x = Arc::new(AtomicI64::new(0));
 
@@ -241,7 +314,11 @@ pub fn run() {
         .manage(AppState {
             is_hovered: app_state_hover,
             test_cpu: Arc::clone(&test_cpu),
+            polling_interval_ms: Arc::clone(&polling_interval_ms),
         })
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
+            // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
+        }))
         .plugin(tauri_plugin_opener::init())
         // move: is_running_tray/t1/t2, thread_hover_state 를 클로저 안으로 이동
         .setup(move |app| {
@@ -270,7 +347,17 @@ pub fn run() {
                                     .resizable(true)
                                     .center()
                                     .skip_taskbar(false) // 설정 창은 작업표시줄에 표시
+                                    .visible(false) // 콘텐츠 로드 완료 후 표시
                                     .build();
+                                    // 콘텐츠 로드 시간 확보 후 창 표시 (흰색 플래시 방지)
+                                    if let Some(w) = app.get_webview_window("settings") {
+                                        let w2 = w.clone();
+                                        std::thread::spawn(move || {
+                                            std::thread::sleep(std::time::Duration::from_millis(150));
+                                            let _ = w2.show();
+                                            let _ = w2.set_focus();
+                                        });
+                                    }
                                 }
                             }
                             "quit" => {
@@ -323,11 +410,11 @@ pub fn run() {
             let monitor = window.primary_monitor().unwrap().unwrap();
             let scale_factor = window.scale_factor().unwrap_or(1.0);
 
-            // Set initial window size (width 120 for bubble space, height 150)
+            // Set initial window size (width for bubble space, height for pet + bubble)
             window
                 .set_size(tauri::Size::Logical(tauri::LogicalSize {
-                    width: 120.0,
-                    height: 150.0, // Height increased for speech bubble space
+                    width: LOGICAL_WIN_W,
+                    height: LOGICAL_WIN_H,
                 }))
                 .expect("Failed to set window size");
 
@@ -417,10 +504,18 @@ pub fn run() {
             let is_running_t1 = Arc::clone(&is_running);
             let pet_x_reader = Arc::clone(&shared_pet_x_t1);
             let avail_mons_writer = Arc::clone(&avail_monitors_t1);
+            let polling_ms_t1 = Arc::clone(&polling_interval_ms);
             std::thread::spawn(move || {
                 let mut sys = sysinfo::System::new();
                 sys.refresh_memory();
                 let mut prev_on_fullscreen = false; // set_always_on_top 중복 호출 방지
+
+                // 네트워크 모니터링 초기화
+                let mut networks = sysinfo::Networks::new_with_refreshed_list();
+
+                // 배터리 모니터링 초기화
+                let battery_manager = starship_battery::Manager::new().ok();
+                let mut battery_tick: u32 = 179; // 첫 폴링을 2초 후로 지연 (React 리스너 등록 대기), 이후 3분마다
 
                 loop {
                     // 중지 상태: 500ms 대기 후 다음 루프 (CPU/메모리 점유 없음)
@@ -478,7 +573,12 @@ pub fn run() {
                         monitors_clone.read().map(|g| g.clone()).unwrap_or_default();
 
                     let pet_x = pet_x_reader.load(Ordering::Relaxed);
-                    let center_x = pet_x + 60;
+                    // 현재 위치의 모니터 scale을 찾아 물리 너비 절반을 계산
+                    let half_w = monitors_snapshot.iter()
+                        .find(|m| pet_x >= m.x as i64 && pet_x < (m.x + m.width) as i64)
+                        .map(|m| (LOGICAL_WIN_W / 2.0 * m.scale_factor) as i64)
+                        .unwrap_or((LOGICAL_WIN_W / 2.0) as i64);
+                    let center_x = pet_x + half_w;
 
                     let fs_flags = check_fullscreen_all(&monitors_snapshot);
 
@@ -493,11 +593,14 @@ pub fn run() {
                         }
                     }
 
-                    // alwaysOnTop: 상태가 변경될 때만 Win32 API 호출 (매초 호출 방지)
-                    if pet_on_fullscreen != prev_on_fullscreen {
-                        let _ = window_clone_evt.set_always_on_top(!pet_on_fullscreen);
-                        prev_on_fullscreen = pet_on_fullscreen;
+                    // 전체화면이 아닐 때: 매초 always_on_top을 재적용하여 다른 창에 가려지지 않도록 보장
+                    // 전체화면일 때: 상태 변경 시에만 해제 (불필요한 호출 방지)
+                    if !pet_on_fullscreen {
+                        let _ = window_clone_evt.set_always_on_top(true);
+                    } else if !prev_on_fullscreen {
+                        let _ = window_clone_evt.set_always_on_top(false);
                     }
+                    prev_on_fullscreen = pet_on_fullscreen;
 
                     if let Ok(mut cache) = avail_mons_writer.write() {
                         *cache = avail;
@@ -506,7 +609,39 @@ pub fn run() {
                     let _ = window_clone_evt.emit("cpu-usage", usage);
                     let _ = window_clone_evt.emit("memory-usage", mem_pct);
 
-                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    // 네트워크: 1초간 수신/송신 바이트 (refresh 간격 = 1초이므로 곧 bytes/sec)
+                    networks.refresh(true);
+                    let mut down_bytes: u64 = 0;
+                    let mut up_bytes: u64 = 0;
+                    for (_name, data) in networks.iter() {
+                        down_bytes += data.received();
+                        up_bytes += data.transmitted();
+                    }
+                    let _ = window_clone_evt.emit("network-usage", serde_json::json!({
+                        "down": down_bytes,
+                        "up": up_bytes
+                    }));
+
+                    // 배터리: 60초마다 폴링 (배터리 잔량은 느리게 변함, WMI 호출 비용 절감)
+                    if battery_tick == 0 {
+                        if let Some(ref manager) = battery_manager {
+                            if let Ok(mut batteries) = manager.batteries() {
+                                if let Some(Ok(bat)) = batteries.next() {
+                                    use starship_battery::State;
+                                    let percent = (bat.state_of_charge().get::<starship_battery::units::ratio::percent>()) as i32;
+                                    let charging = matches!(bat.state(), State::Charging | State::Full);
+                                    let _ = window_clone_evt.emit("battery-usage", serde_json::json!({
+                                        "percent": percent,
+                                        "charging": charging
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    battery_tick = (battery_tick + 1) % 180;
+
+                    let interval = polling_ms_t1.load(Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(interval));
                 }
             });
 
@@ -517,11 +652,6 @@ pub fn run() {
             let is_running_t2 = Arc::clone(&is_running);
             let pet_x_writer = Arc::clone(&shared_pet_x_t2);
             let test_cpu_t2 = Arc::clone(&test_cpu);
-            // 윈도우 실제 물리 크기를 한 번 측정 (150 * scale 추정값 대신 정확한 값 사용)
-            let actual_win_h = window_clone
-                .outer_size()
-                .map(|s| s.height as i32)
-                .unwrap_or((150.0 * scale_factor) as i32);
             std::thread::spawn(move || {
                 loop {
                     // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
@@ -565,26 +695,35 @@ pub fn run() {
                             let mut target_y = 0;
                             let mut found_monitor = false;
 
-                            // Use the center of the window (approx 60px scaled) to determine which monitor we are on.
-                            let center_x = current_x + 60.0;
+                            // 먼저 min/max 범위만 계산 (center_x 계산에 이전 scale 사용)
+                            for m in monitors.iter() {
+                                if m.x < min_x {
+                                    min_x = m.x;
+                                }
+                                if m.x + m.width > max_x {
+                                    max_x = m.x + m.width;
+                                }
+                            }
 
-                            // Find the total span and which monitor we are currently on
+                            // 현재 모니터를 찾아 scale, target_y를 동적으로 계산
+                            // center_x: 물리 좌표 기준 윈도우 중앙 (이전 프레임 scale 기반 근사)
+                            let center_x = current_x + (LOGICAL_WIN_W / 2.0 * current_scale);
+
+                            // OS가 보고하는 실제 윈도우 물리 높이 (DPI 전환 시에도 정확)
+                            let actual_win_h = window_clone
+                                .outer_size()
+                                .map(|s| s.height as i32)
+                                .unwrap_or((LOGICAL_WIN_H * current_scale) as i32);
+
                             for m in monitors.iter() {
                                 let px = m.x;
                                 let pw = m.width;
                                 let scale = m.scale_factor;
 
-                                if px < min_x {
-                                    min_x = px;
-                                }
-                                if px + pw > max_x {
-                                    max_x = px + pw;
-                                }
-
                                 // If the pet's CENTER X is within this monitor's X bounds
                                 if center_x >= (px as f64) && center_x <= ((px + pw) as f64) {
                                     current_scale = scale;
-                                    // work_bottom: Win32 절대 Y좌표, actual_win_h: 실제 윈도우 물리 높이
+                                    // 실제 윈도우 물리 높이로 정확한 Y 위치 계산
                                     target_y = m.work_bottom - actual_win_h;
                                     found_monitor = true;
                                 }
@@ -631,7 +770,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_hover,
             set_test_cpu,
-            update_pet_color
+            update_pet_color,
+            update_monitor_config,
+            load_messages,
+            set_polling_interval,
+            update_bubble_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

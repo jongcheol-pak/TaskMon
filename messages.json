@@ -1,0 +1,46 @@
+{
+  "messages": [
+    {
+      "target": "battery",
+      "condition": "less_than",
+      "value": 20,
+      "priority": 10,
+      "text": "아사 직전... 밥(충전기) 좀 주세요... 🔋"
+    },
+    {
+      "target": "battery",
+      "condition": "less_than",
+      "value": 50,
+      "priority": 7,
+      "text": "슬슬 배가 고파지고 있어요... 🔋"
+    },
+    {
+      "target": "cpu",
+      "condition": "greater_than",
+      "value": 90,
+      "priority": 9,
+      "text": "선배님, 빌드 중이신가요? 제 몸이 불타고 있어요! 🔥"
+    },
+    {
+      "target": "cpu",
+      "condition": "greater_than",
+      "value": 80,
+      "priority": 6,
+      "text": "으으... 좀 뜨거운데요? 🌡️"
+    },
+    {
+      "target": "memory",
+      "condition": "greater_than",
+      "value": 90,
+      "priority": 8,
+      "text": "방금 그 크롬 탭... 하나만 닫아주시면 안 될까요? 💾"
+    },
+    {
+      "target": "memory",
+      "condition": "greater_than",
+      "value": 80,
+      "priority": 5,
+      "text": "머리가 좀 복잡해지고 있어요... 💾"
+    }
+  ]
+}

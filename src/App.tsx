@@ -17,15 +17,94 @@ const RUN_IMAGES = [runUnarmed, runSword, runSwordShield] as const;
 // 아이들 이미지 3종 (runVariant와 동일 인덱스)
 const IDLE_IMAGES = [idleUnarmed, idleSword, idleSwordShield] as const;
 
+interface MonitorConfig {
+  cpu: boolean;
+  memory: boolean;
+  network: boolean;
+  battery: boolean;
+}
+
+// condition: 오타 방지를 위해 명확한 단어 사용
+type MessageCondition = "less_than" | "greater_than" | "less_equal" | "greater_equal" | "equal";
+
+interface PetMessage {
+  target: string;         // "cpu" | "memory" | "battery" | "network_down" | "network_up"
+  condition: MessageCondition;
+  value: number;
+  priority: number;       // 높을수록 우선
+  text: string;
+}
+
+// 메시지 조건 평가: 매칭되는 조건 중 priority가 가장 높은 1개만 반환
+// monitorConfig에서 체크 안 된 항목은 평가에서 제외
+function evaluateMessage(
+  messages: PetMessage[],
+  cpu: number,
+  mem: number,
+  battery: number,
+  netDown: number,
+  netUp: number,
+  config: MonitorConfig
+): string | null {
+  const matched = messages.filter(msg => {
+    let actual: number;
+    switch (msg.target) {
+      case "cpu":
+        if (!config.cpu) return false;
+        actual = cpu; break;
+      case "memory":
+        if (!config.memory) return false;
+        actual = mem; break;
+      case "battery":
+        if (!config.battery || battery < 0) return false;
+        actual = battery;
+        break;
+      case "network_down":
+      case "network_up":
+        if (!config.network) return false;
+        actual = msg.target === "network_down" ? netDown : netUp;
+        break;
+      default: return false;
+    }
+
+    switch (msg.condition) {
+      case "less_than": return actual < msg.value;
+      case "greater_than": return actual > msg.value;
+      case "less_equal": return actual <= msg.value;
+      case "greater_equal": return actual >= msg.value;
+      case "equal": return actual === msg.value;
+      default: return false;
+    }
+  });
+
+  if (matched.length === 0) return null;
+  matched.sort((a, b) => b.priority - a.priority);
+  return matched[0].text;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 function App() {
   const speedRef = useRef(1);
   const [isHovered, setIsHovered] = useState(false);
   const [isHurt, setIsHurt] = useState(false);
   const [cpuUsage, setCpuUsage] = useState(0);
   const [memUsage, setMemUsage] = useState(0);
+  const [networkDown, setNetworkDown] = useState(0);
+  const [networkUp, setNetworkUp] = useState(0);
+  const [batteryPercent, setBatteryPercent] = useState(-1); // -1 = 배터리 없음
+  const [batteryCharging, setBatteryCharging] = useState(false);
   const [isTestMode, setIsTestMode] = useState(false);
   const [testCpuValue, setTestCpuValue] = useState(50);
   const [windowLabel, setWindowLabel] = useState<string>("");
+  const [monitorConfig, setMonitorConfig] = useState<MonitorConfig>(() => {
+    const saved = localStorage.getItem('monitorConfig');
+    return saved ? JSON.parse(saved) : { cpu: true, memory: true, network: false, battery: false };
+  });
   const [runVariant, setRunVariant] = useState<number>(() => {
     const saved = localStorage.getItem('petRunVariant');
     return saved !== null ? Number(saved) : 0;
@@ -45,6 +124,22 @@ function App() {
     return saved !== null ? Number(saved) : 100;
   });
 
+  // 메시지 시스템 상태
+  const [petMessages, setPetMessages] = useState<PetMessage[]>([]);
+  const [petMessage, setPetMessage] = useState<string | null>(null);
+
+  // 설정: 폴링 간격 (초)
+  const [pollingInput, setPollingInput] = useState<string>(() => {
+    const saved = localStorage.getItem('pollingInterval');
+    return saved !== null ? saved : "1";
+  });
+
+  // 설정: 말풍선 사용 여부
+  const [bubbleEnabled, setBubbleEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('bubbleEnabled');
+    return saved !== null ? saved === 'true' : true;
+  });
+
   const skeletonRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<Animation | null>(null);
   const hurtTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -62,6 +157,35 @@ function App() {
       setWindowLabel("settings");
     }
   }, []);
+
+  // 메시지 파일 로딩 (앱 시작 시 1회)
+  useEffect(() => {
+    invoke<PetMessage[]>("load_messages")
+      .then((msgs) => setPetMessages(msgs))
+      .catch(() => setPetMessages([]));
+  }, []);
+
+  // 저장된 폴링 간격을 Rust에 적용 (앱 시작 시 1회)
+  useEffect(() => {
+    const saved = localStorage.getItem('pollingInterval');
+    if (saved) {
+      const seconds = parseInt(saved, 10);
+      if (!isNaN(seconds) && seconds > 0) {
+        invoke("set_polling_interval", { seconds });
+      }
+    }
+  }, []);
+
+  // 메시지 평가: 모니터링 값 변경 시마다 즉시 평가 (Rust 폴링 1초 간격 = 초당 최대 1회)
+  useEffect(() => {
+    if (petMessages.length === 0) {
+      setPetMessage(null);
+      return;
+    }
+
+    const effectiveCpu = isTestMode ? testCpuValue : cpuUsage;
+    setPetMessage(evaluateMessage(petMessages, effectiveCpu, memUsage, batteryPercent, networkDown, networkUp, monitorConfig));
+  }, [cpuUsage, memUsage, batteryPercent, networkDown, networkUp, petMessages, isTestMode, testCpuValue, monitorConfig]);
 
   useEffect(() => {
     const unlisten = listen<number>("cpu-usage", (event) => {
@@ -89,12 +213,32 @@ function App() {
       setSaturation(event.payload.saturation);
       setBrightness(event.payload.brightness);
     });
+    const unlistenNetwork = listen<{down: number, up: number}>("network-usage", (event) => {
+      setNetworkDown(event.payload.down);
+      setNetworkUp(event.payload.up);
+    });
+    const unlistenBattery = listen<{percent: number, charging: boolean}>("battery-usage", (event) => {
+      setBatteryPercent(event.payload.percent);
+      setBatteryCharging(event.payload.charging);
+    });
+    const unlistenMonitorConfig = listen<MonitorConfig>("monitor-config-update", (event) => {
+      setMonitorConfig(event.payload);
+      localStorage.setItem('monitorConfig', JSON.stringify(event.payload));
+    });
+    const unlistenBubble = listen<boolean>("bubble-enabled-update", (event) => {
+      setBubbleEnabled(event.payload);
+      localStorage.setItem('bubbleEnabled', String(event.payload));
+    });
 
     return () => {
       unlisten.then((f) => f());
       unlistenMem.then((f) => f());
       unlistenTestMode.then((f) => f());
       unlistenColor.then((f) => f());
+      unlistenNetwork.then((f) => f());
+      unlistenBattery.then((f) => f());
+      unlistenMonitorConfig.then((f) => f());
+      unlistenBubble.then((f) => f());
     };
   }, []);
 
@@ -105,9 +249,11 @@ function App() {
       localStorage.setItem('petHue', String(hue));
       localStorage.setItem('petSaturation', String(saturation));
       localStorage.setItem('petBrightness', String(brightness));
+      localStorage.setItem('monitorConfig', JSON.stringify(monitorConfig));
+      localStorage.setItem('bubbleEnabled', String(bubbleEnabled));
     }, 500);
     return () => clearTimeout(timer);
-  }, [runVariant, hue, saturation, brightness]);
+  }, [runVariant, hue, saturation, brightness, monitorConfig, bubbleEnabled]);
 
   useEffect(() => {
     // hurt 또는 hover 중이면 run 애니메이션 중단
@@ -181,6 +327,13 @@ function App() {
     }
   };
 
+  // 모니터링 설정 변경 핸들러
+  const handleMonitorToggle = (key: keyof MonitorConfig) => {
+    const updated = { ...monitorConfig, [key]: !monitorConfig[key] };
+    setMonitorConfig(updated);
+    invoke("update_monitor_config", updated);
+  };
+
   // 클래스 결정: hurt > idle > run
   let skeletonClass = 'skeleton';
   if (isHurt) skeletonClass += ' hurt';
@@ -233,6 +386,22 @@ function App() {
                 onClick={() => setSettingsTab("color")}
               >
                 펫 색상
+              </button>
+            </li>
+            <li>
+              <button
+                className={`sidebar-item ${settingsTab === "monitoring" ? "active" : ""}`}
+                onClick={() => setSettingsTab("monitoring")}
+              >
+                모니터링
+              </button>
+            </li>
+            <li>
+              <button
+                className={`sidebar-item ${settingsTab === "general" ? "active" : ""}`}
+                onClick={() => setSettingsTab("general")}
+              >
+                설정
               </button>
             </li>
           </ul>
@@ -348,6 +517,82 @@ function App() {
               </div>
             </div>
           )}
+
+          {settingsTab === "monitoring" && (
+            <div className="settings-section">
+              <h3>모니터링 항목</h3>
+              <p className="description">마우스를 올렸을 때 말풍선에 표시할 항목을 선택합니다.</p>
+              <div className="monitor-checklist">
+                <label className="monitor-item">
+                  <input type="checkbox" checked={monitorConfig.cpu} onChange={() => handleMonitorToggle('cpu')} />
+                  <span className="monitor-label">CPU 사용률</span>
+                  <span className="monitor-preview">{cpuUsage}%</span>
+                </label>
+                <label className="monitor-item">
+                  <input type="checkbox" checked={monitorConfig.memory} onChange={() => handleMonitorToggle('memory')} />
+                  <span className="monitor-label">메모리 사용률</span>
+                  <span className="monitor-preview">{memUsage}%</span>
+                </label>
+                <label className="monitor-item">
+                  <input type="checkbox" checked={monitorConfig.network} onChange={() => handleMonitorToggle('network')} />
+                  <span className="monitor-label">네트워크 속도</span>
+                  <span className="monitor-preview">{formatBytes(networkDown)}/s</span>
+                </label>
+                <label className="monitor-item">
+                  <input type="checkbox" checked={monitorConfig.battery} onChange={() => handleMonitorToggle('battery')} />
+                  <span className="monitor-label">배터리</span>
+                  <span className="monitor-preview">{batteryPercent >= 0 ? `${batteryPercent}%` : '없음'}</span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {settingsTab === "general" && (
+            <div className="settings-section">
+              <h3>설정</h3>
+              <div className="general-settings">
+                <div className="setting-item">
+                  <span className="setting-label">폴링 간격 (초)</span>
+                  <div className="polling-control">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={pollingInput}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/[^0-9]/g, '');
+                        setPollingInput(v);
+                      }}
+                      className="polling-input"
+                    />
+                    <button
+                      className="polling-apply"
+                      onClick={() => {
+                        const val = parseInt(pollingInput, 10);
+                        const seconds = isNaN(val) || val === 0 ? 1 : val;
+                        setPollingInput(String(seconds));
+                        localStorage.setItem('pollingInterval', String(seconds));
+                        invoke("set_polling_interval", { seconds });
+                      }}
+                    >
+                      적용
+                    </button>
+                  </div>
+                </div>
+                <label className="setting-item">
+                  <input
+                    type="checkbox"
+                    checked={bubbleEnabled}
+                    onChange={(e) => {
+                      setBubbleEnabled(e.target.checked);
+                      invoke("update_bubble_enabled", { enabled: e.target.checked });
+                    }}
+                  />
+                  <span className="setting-label">말풍선 사용</span>
+                </label>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     );
@@ -355,11 +600,20 @@ function App() {
 
   return (
     <div className="pet-container">
-      {isHovered && !isHurt && (
+      {/* 이동(run) 중: 조건 메시지 표시 (말풍선 사용 시만) */}
+      {bubbleEnabled && !isHovered && !isHurt && petMessage && (
+        <div className="speech-bubble message-bubble">
+          <div className="pet-message">{petMessage}</div>
+        </div>
+      )}
+      {/* hover(idle) 중: 모니터링 수치 표시 */}
+      {isHovered && !isHurt && (monitorConfig.cpu || monitorConfig.memory || monitorConfig.network || monitorConfig.battery) && (
         <div className="speech-bubble">
           <div className="stat-row">
-            <span>🖥 CPU&nbsp; {isTestMode ? `${testCpuValue}% (Test)` : `${cpuUsage}%`}</span>
-            <span>💾 MEM {memUsage}%</span>
+            {monitorConfig.cpu && <span>🖥 CPU {isTestMode ? `${testCpuValue}%` : `${cpuUsage}%`}</span>}
+            {monitorConfig.memory && <span>💾 MEM {memUsage}%</span>}
+            {monitorConfig.network && <span>🌐 NET {formatBytes(networkDown)}/s</span>}
+            {monitorConfig.battery && batteryPercent >= 0 && <span>🔋 BAT {batteryPercent}%{batteryCharging ? ' ⚡' : ''}</span>}
           </div>
         </div>
       )}
