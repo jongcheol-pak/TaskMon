@@ -300,15 +300,20 @@ pub fn run() {
     // 캐릭터의 현재 물리 X 좌표를 Thread 2 → Thread 1 방향으로 공유 (전체화면 감지에 사용)
     let shared_pet_x = Arc::new(AtomicI64::new(0));
 
-    // 전체화면이 아닌 이동 가능한 모니터 목록: Thread 1(갱신) → Thread 2(참조)
-    let shared_avail_monitors = Arc::new(RwLock::new(Vec::<MonitorInfo>::new()));
+    // 펫이 전체화면 모니터 위에 있는지 여부: Thread 1(갱신) → Thread 2(참조)
+    let shared_on_fullscreen = Arc::new(AtomicBool::new(false));
+
+    // Thread 1 → Thread 2: 모니터 변경 시 텔레포트 좌표 (i64::MIN = 텔레포트 불필요)
+    let shared_teleport_x = Arc::new(AtomicI64::new(i64::MIN));
 
     // setup 클로저(move)에 넘길 clone 미리 준비
     let is_running_tray = Arc::clone(&is_running);
     let shared_pet_x_t1 = Arc::clone(&shared_pet_x);
     let shared_pet_x_t2 = Arc::clone(&shared_pet_x);
-    let avail_monitors_t1 = Arc::clone(&shared_avail_monitors);
-    let avail_monitors_t2 = Arc::clone(&shared_avail_monitors);
+    let on_fullscreen_t1 = Arc::clone(&shared_on_fullscreen);
+    let on_fullscreen_t2 = Arc::clone(&shared_on_fullscreen);
+    let teleport_x_t1 = Arc::clone(&shared_teleport_x);
+    let teleport_x_t2 = Arc::clone(&shared_teleport_x);
 
     tauri::Builder::default()
         .manage(AppState {
@@ -465,7 +470,7 @@ pub fn run() {
             // 추가: 글로벌 공유 모니터 정보 캐시 (1초 갱신)
             let shared_monitors = Arc::new(RwLock::new(Vec::<MonitorInfo>::new()));
 
-            // 초기 모니터 정보 캐싱 + avail_monitors도 초기화(첫 1초 동안 이동 가능하도록)
+            // 초기 모니터 정보 캐싱 (첫 1초 동안 이동 가능하도록)
             if let Ok(monitors) = window_clone.available_monitors() {
                 let info_list: Vec<MonitorInfo> = monitors
                     .iter()
@@ -488,10 +493,6 @@ pub fn run() {
                     .collect();
                 // shared_monitors 초기화
                 if let Ok(mut cache) = shared_monitors.write() {
-                    *cache = info_list.clone();
-                }
-                // avail_monitors도 동일하게 초기화 (전체화면 없다고 가정)
-                if let Ok(mut cache) = shared_avail_monitors.write() {
                     *cache = info_list;
                 }
             }
@@ -503,12 +504,14 @@ pub fn run() {
             let window_clone_evt = window.clone();
             let is_running_t1 = Arc::clone(&is_running);
             let pet_x_reader = Arc::clone(&shared_pet_x_t1);
-            let avail_mons_writer = Arc::clone(&avail_monitors_t1);
+            let on_fs_writer = Arc::clone(&on_fullscreen_t1);
+            let teleport_writer = Arc::clone(&teleport_x_t1);
             let polling_ms_t1 = Arc::clone(&polling_interval_ms);
             std::thread::spawn(move || {
                 let mut sys = sysinfo::System::new();
                 sys.refresh_memory();
                 let mut prev_on_fullscreen = false; // set_always_on_top 중복 호출 방지
+                let mut prev_monitor_count: usize = 0; // 모니터 수 변경 감지용
 
                 // 네트워크 모니터링 초기화
                 let mut networks = sysinfo::Networks::new_with_refreshed_list();
@@ -572,6 +575,27 @@ pub fn run() {
                     let monitors_snapshot =
                         monitors_clone.read().map(|g| g.clone()).unwrap_or_default();
 
+                    // 모니터 수 변경 감지: 모니터 분리/연결 시 윈도우 복구
+                    let cur_monitor_count = monitors_snapshot.len();
+                    if prev_monitor_count != 0 && cur_monitor_count != prev_monitor_count {
+                        // 펫이 유효한 모니터 범위 내에 있는지 확인
+                        let pet_x_val = pet_x_reader.load(Ordering::Relaxed);
+                        let in_bounds = monitors_snapshot.iter().any(|m| {
+                            pet_x_val >= (m.x - 200) as i64
+                                && pet_x_val < (m.x + m.width) as i64
+                        });
+                        if !in_bounds {
+                            if let Some(first) = monitors_snapshot.first() {
+                                // Thread 2에 텔레포트 좌표 전달
+                                teleport_writer.store(first.x as i64, Ordering::Relaxed);
+                            }
+                        }
+                        // OS가 윈도우를 숨겼을 수 있으므로 강제 표시 및 최상위 재적용
+                        let _ = window_clone_evt.show();
+                        let _ = window_clone_evt.set_always_on_top(true);
+                    }
+                    prev_monitor_count = cur_monitor_count;
+
                     let pet_x = pet_x_reader.load(Ordering::Relaxed);
                     // 현재 위치의 모니터 scale을 찾아 물리 너비 절반을 계산
                     let half_w = monitors_snapshot.iter()
@@ -582,29 +606,23 @@ pub fn run() {
 
                     let fs_flags = check_fullscreen_all(&monitors_snapshot);
 
-                    let mut avail = Vec::with_capacity(monitors_snapshot.len());
                     let mut pet_on_fullscreen = false;
                     for (m, &fs) in monitors_snapshot.iter().zip(fs_flags.iter()) {
-                        if !fs {
-                            avail.push(m.clone());
-                        }
                         if center_x >= m.x as i64 && center_x < (m.x + m.width) as i64 && fs {
                             pet_on_fullscreen = true;
                         }
                     }
 
-                    // 전체화면이 아닐 때: 매초 always_on_top을 재적용하여 다른 창에 가려지지 않도록 보장
-                    // 전체화면일 때: 상태 변경 시에만 해제 (불필요한 호출 방지)
-                    if !pet_on_fullscreen {
-                        let _ = window_clone_evt.set_always_on_top(true);
-                    } else if !prev_on_fullscreen {
+                    // Thread 2가 SetWindowPos에서 HWND_TOPMOST/NOTOPMOST를 판단할 수 있도록 공유
+                    on_fs_writer.store(pet_on_fullscreen, Ordering::Relaxed);
+
+                    // 전체화면 상태 전환 시에만 Tauri API로 즉시 반영 (Thread 2의 다음 프레임까지 대기 방지)
+                    if pet_on_fullscreen && !prev_on_fullscreen {
                         let _ = window_clone_evt.set_always_on_top(false);
+                    } else if !pet_on_fullscreen && prev_on_fullscreen {
+                        let _ = window_clone_evt.set_always_on_top(true);
                     }
                     prev_on_fullscreen = pet_on_fullscreen;
-
-                    if let Ok(mut cache) = avail_mons_writer.write() {
-                        *cache = avail;
-                    }
 
                     let _ = window_clone_evt.emit("cpu-usage", usage);
                     let _ = window_clone_evt.emit("memory-usage", mem_pct);
@@ -648,11 +666,23 @@ pub fn run() {
             // --- Thread 2: 윈도우 이동 및 프레임(16ms) 업데이트 ---
             // 중지 상태일 때는 sleep만 하고 set_position 호출 없음 → GPU/CPU 점유 없음
             let cpu_usage_reader = Arc::clone(&shared_cpu_usage);
-            let avail_monitors_reader = Arc::clone(&avail_monitors_t2);
+            let all_monitors_reader = Arc::clone(&shared_monitors);
             let is_running_t2 = Arc::clone(&is_running);
             let pet_x_writer = Arc::clone(&shared_pet_x_t2);
             let test_cpu_t2 = Arc::clone(&test_cpu);
+            let on_fs_reader = Arc::clone(&on_fullscreen_t2);
+            let teleport_reader = Arc::clone(&teleport_x_t2);
+
+            // Win32 HWND 캐시 (Thread 2에서 SetWindowPos 직접 호출용)
+            #[cfg(target_os = "windows")]
+            let cached_hwnd: isize = window_clone
+                .hwnd()
+                .map(|h| h.0 as isize)
+                .unwrap_or(0);
             std::thread::spawn(move || {
+                let mut prev_scale: f64 = 1.0; // 이전 프레임의 모니터 scale (프레임 간 유지하여 center_x 진동 방지)
+                let mut smooth_y: f64 = 0.0;   // Y 위치 보간용 (모니터 전환 시 높이 점프 방지)
+                let mut smooth_y_init = false;
                 loop {
                     // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
                     if !is_running_t2.load(Ordering::Relaxed) {
@@ -661,6 +691,13 @@ pub fn run() {
                     }
 
                     std::thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
+
+                    // Thread 1로부터 텔레포트 요청 수신 (모니터 핫플러그 시)
+                    let teleport_x = teleport_reader.load(Ordering::Relaxed);
+                    if teleport_x != i64::MIN {
+                        current_x = teleport_x as f64;
+                        teleport_reader.store(i64::MIN, Ordering::Relaxed);
+                    }
 
                     // 공유 메모리에서 읽기만 수행 (매우 빠름, lock 없음)
                     let current_cpu = {
@@ -677,7 +714,9 @@ pub fn run() {
                     let delta_time = now.duration_since(last_update).as_secs_f64();
                     last_update = now;
 
-                    let mut speed_multiplier = 1.0 + (current_cpu as f64 / 10.0);
+                    // CPU 사용률에 비례한 속도 (0%→1x, 50%→3x, 100%→5x)
+                    // 최대 5x로 제한하여 고속 이동 시 끊김 방지
+                    let mut speed_multiplier = 1.0 + (current_cpu as f64 / 25.0);
 
                     // IF hovered, stop movement completely
                     if let Ok(hovered) = thread_hover_state.lock() {
@@ -686,16 +725,15 @@ pub fn run() {
                         }
                     }
 
-                    // 이동 가능한 모니터 목록(전체화면 제외)에서만 이동
-                    if let Ok(monitors) = avail_monitors_reader.read() {
+                    // 전체 모니터 목록 기준으로 이동 (전체화면 모니터는 topmost 해제로 뒤에 숨김)
+                    if let Ok(monitors) = all_monitors_reader.read() {
                         if !monitors.is_empty() {
                             let mut max_x = i32::MIN;
                             let mut min_x = i32::MAX;
-                            let mut current_scale = 1.0;
-                            let mut target_y = 0;
+                            let mut raw_target_y = 0i32;
                             let mut found_monitor = false;
 
-                            // 먼저 min/max 범위만 계산 (center_x 계산에 이전 scale 사용)
+                            // 먼저 min/max 범위만 계산
                             for m in monitors.iter() {
                                 if m.x < min_x {
                                     min_x = m.x;
@@ -705,26 +743,22 @@ pub fn run() {
                                 }
                             }
 
-                            // 현재 모니터를 찾아 scale, target_y를 동적으로 계산
-                            // center_x: 물리 좌표 기준 윈도우 중앙 (이전 프레임 scale 기반 근사)
-                            let center_x = current_x + (LOGICAL_WIN_W / 2.0 * current_scale);
+                            // 이전 프레임의 scale로 정확한 윈도우 중심 계산 (경계 진동 방지)
+                            let center_x = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
 
                             // OS가 보고하는 실제 윈도우 물리 높이 (DPI 전환 시에도 정확)
                             let actual_win_h = window_clone
                                 .outer_size()
                                 .map(|s| s.height as i32)
-                                .unwrap_or((LOGICAL_WIN_H * current_scale) as i32);
+                                .unwrap_or((LOGICAL_WIN_H * prev_scale) as i32);
 
                             for m in monitors.iter() {
                                 let px = m.x;
                                 let pw = m.width;
-                                let scale = m.scale_factor;
 
-                                // If the pet's CENTER X is within this monitor's X bounds
                                 if center_x >= (px as f64) && center_x <= ((px + pw) as f64) {
-                                    current_scale = scale;
-                                    // 실제 윈도우 물리 높이로 정확한 Y 위치 계산
-                                    target_y = m.work_bottom - actual_win_h;
+                                    prev_scale = m.scale_factor;
+                                    raw_target_y = m.work_bottom - actual_win_h;
                                     found_monitor = true;
                                 }
                             }
@@ -735,8 +769,8 @@ pub fn run() {
                                 max_x = 1920;
                             }
 
-                            // Apply scaled movement speed (lowered base speed from 50 to 35)
-                            let movement = 35.0 * current_scale * speed_multiplier * delta_time;
+                            // 이동 속도 계산 (현재 모니터 scale 반영)
+                            let movement = 35.0 * prev_scale * speed_multiplier * delta_time;
                             current_x += movement;
                             // Thread 1의 전체화면 감지가 올바른 모니터를 알 수 있도록 공유
                             pet_x_writer.store(current_x as i64, Ordering::Relaxed);
@@ -748,18 +782,74 @@ pub fn run() {
                                 current_x = min_x as f64 - 100.0;
                             }
 
-                            // 공중에 떠버린 미아 모니터 처리 (발생 시 1번 모니터로 강제 소환)
+                            // 모니터 미발견 시 (베젤 통과 중 등) 첫 번째 모니터 기준으로 보정
                             if !found_monitor {
                                 if let Some(pm) = monitors.first() {
-                                    target_y = pm.work_bottom - actual_win_h;
+                                    raw_target_y = pm.work_bottom - actual_win_h;
                                 }
-                                // 베젤(모니터 여백)을 지날 때는 찾지 못할 수 있으므로 강제 x 워프는 제거함 (자연스럽게 넘어가도록 둠)
                             }
 
-                            // Apply absolute Physical position
-                            let _ = window_clone.set_position(tauri::Position::Physical(
-                                tauri::PhysicalPosition::new(current_x as i32, target_y),
-                            ));
+                            // Y 위치 보간: 모니터 간 work_bottom 차이로 인한 높이 점프 방지
+                            if !smooth_y_init {
+                                smooth_y = raw_target_y as f64;
+                                smooth_y_init = true;
+                            } else {
+                                let diff = raw_target_y as f64 - smooth_y;
+                                if diff.abs() < 1.0 {
+                                    smooth_y = raw_target_y as f64;
+                                } else {
+                                    smooth_y += diff * 0.15;
+                                }
+                            }
+                            let target_y = smooth_y as i32;
+
+                            // Win32 SetWindowPos로 위치 이동과 TOPMOST를 동시에 적용
+                            // → 모니터 간 이동 시 다른 창 뒤로 숨는 문제 방지
+                            #[cfg(target_os = "windows")]
+                            {
+                                #[link(name = "user32")]
+                                extern "system" {
+                                    fn SetWindowPos(
+                                        hwnd: isize,
+                                        hWndInsertAfter: isize,
+                                        x: i32,
+                                        y: i32,
+                                        cx: i32,
+                                        cy: i32,
+                                        uFlags: u32,
+                                    ) -> i32;
+                                }
+                                const HWND_TOPMOST: isize = -1;
+                                const HWND_NOTOPMOST: isize = -2;
+                                const SWP_NOSIZE: u32 = 0x0001;
+                                const SWP_NOACTIVATE: u32 = 0x0010;
+
+                                let insert_after = if on_fs_reader.load(Ordering::Relaxed) {
+                                    HWND_NOTOPMOST
+                                } else {
+                                    HWND_TOPMOST
+                                };
+
+                                if cached_hwnd != 0 {
+                                    unsafe {
+                                        SetWindowPos(
+                                            cached_hwnd,
+                                            insert_after,
+                                            current_x as i32,
+                                            target_y,
+                                            0,
+                                            0,
+                                            SWP_NOSIZE | SWP_NOACTIVATE,
+                                        );
+                                    }
+                                }
+                            }
+                            #[cfg(not(target_os = "windows"))]
+                            {
+                                let _ = window_clone.set_position(tauri::Position::Physical(
+                                    tauri::PhysicalPosition::new(current_x as i32, target_y),
+                                ));
+                            }
                         }
                     }
                 }
