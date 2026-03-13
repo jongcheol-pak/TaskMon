@@ -24,6 +24,9 @@ body,
   flex-direction: column;
   justify-content: flex-end;
   align-items: center;
+  /* 말풍선 기본 폰트 */
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 12px;
 }
 
 /* Idle 상태 말풍선: 캐릭터 위에 표시 (투명 배경 + 아웃라인) */
@@ -40,8 +43,8 @@ body,
   background: transparent;
   /* 배경 투명화 */
   color: #ffffff;
-  font-family: 'Segoe UI', sans-serif;
-  font-size: 11px;
+  font-family: inherit;
+  font-size: inherit;
   font-weight: bold;
   line-height: 1.2;
   white-space: nowrap;
@@ -123,11 +126,32 @@ body,
   padding-left: 13px;
 }
 
+/* 우측 콘텐츠 영역 래퍼 (하단 페이드용) */
+.settings-content-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.settings-content-wrapper::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 12px;
+  background: linear-gradient(transparent, #1a1a1a);
+  pointer-events: none;
+  z-index: 1;
+}
+
 /* 우측 콘텐츠 영역 */
 .settings-content {
-  flex: 1;
+  height: 100%;
   padding: 24px;
+  padding-bottom: 12px;
   overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .settings-section {
@@ -199,7 +223,7 @@ body,
 /* 2D 컬러 맵 컨테이너 */
 .color-picker-2d {
   position: relative;
-  width: 100%;
+  width: 60%;
   aspect-ratio: 1 / 1;
   /* 정사각형 유지 */
   border-radius: 8px;
@@ -251,12 +275,12 @@ body,
   bottom: 48px;
   white-space: normal !important;
   text-align: center;
-  width: 190px;
+  width: 200px;
   word-break: keep-all;
 }
 
 .pet-message {
-  font-size: 12px;
+  font-size: inherit;
 }
 
 .stat-row {
@@ -371,6 +395,206 @@ body,
   background: #ff6b7a;
 }
 
+/* 알림 문구: 모니터링 문구와 구분되는 강조 스타일 */
+.notification-text {
+  color: #ffdd57;
+}
+
+/* 알림 설정 폼 */
+.alarm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.alarm-form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.alarm-form-row .setting-label {
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.alarm-select {
+  flex: 1;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #f1f1f1;
+  font-size: 13px;
+}
+
+.alarm-select:focus {
+  outline: none;
+  border-color: #ff4757;
+}
+
+.alarm-time-input {
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #f1f1f1;
+  font-size: 13px;
+}
+
+.alarm-time-input::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}
+
+.alarm-time-input:focus {
+  outline: none;
+  border-color: #ff4757;
+}
+
+.alarm-delay-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #ccc;
+  font-size: 13px;
+}
+
+.alarm-message-input {
+  flex: 1;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #f1f1f1;
+  font-size: 13px;
+}
+
+.alarm-message-input:focus {
+  outline: none;
+  border-color: #ff4757;
+}
+
+.alarm-add-btn {
+  align-self: flex-end;
+  margin-top: 4px;
+}
+
+/* 등록된 알림 목록 */
+.alarm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.alarm-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: #2a2a2a;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.alarm-item:hover {
+  background: #333;
+}
+
+.alarm-item.alarm-disabled {
+  opacity: 0.5;
+}
+
+.alarm-item-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.alarm-type-badge {
+  padding: 2px 8px;
+  background: #ff4757;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: bold;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.alarm-detail {
+  font-size: 13px;
+  color: #ccc;
+  white-space: nowrap;
+}
+
+.alarm-message-preview {
+  font-size: 13px;
+  color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alarm-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+}
+
+.alarm-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #ff4757;
+  cursor: pointer;
+}
+
+.alarm-delete-btn {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.alarm-delete-btn:hover {
+  color: #ff4757;
+}
+
+/* 알림 중복 표시 모드 라디오 그룹 */
+.notification-mode-group {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notification-mode-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.notification-mode-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #ccc;
+  font-size: 13px;
+}
+
+.notification-mode-radio input[type="radio"] {
+  accent-color: #ff4757;
+  margin: 0;
+}
+
 /* 스켈레톤 도트 스프라이트 설정 */
 .skeleton {
   /* 원본 프레임 크기(64x48)에 맞춰 설정 (하단 투명 여백 16px 제거 후) */
@@ -424,4 +648,106 @@ body,
   to {
     background-position: -128px 0px;
   }
+}
+
+/* 이모지 입력 래퍼: input + 토글 버튼을 한 줄로 배치 */
+.emoji-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.emoji-input-wrapper .alarm-message-input {
+  flex: 1;
+}
+
+.emoji-toggle-btn {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s;
+}
+
+.emoji-toggle-btn:hover {
+  background: #3a3a3a;
+}
+
+/* 이모지 피커 패널 */
+.emoji-picker {
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+/* 카테고리 탭 바 */
+.emoji-tabs {
+  display: flex;
+  border-bottom: 1px solid #333;
+  background: #252525;
+}
+
+.emoji-tab {
+  flex: 1;
+  padding: 6px 0;
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.emoji-tab:hover {
+  opacity: 0.8;
+  background: #2a2a2a;
+}
+
+.emoji-tab.active {
+  opacity: 1;
+  background: #333;
+  border-bottom: 2px solid #ff4757;
+}
+
+/* 이모지 그리드 */
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.emoji-item {
+  background: none;
+  border: none;
+  font-size: 20px;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.emoji-item:hover {
+  background: #3a3a3a;
+}
+
+/* 저장/가져오기 버튼 영역 */
+.export-import-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+
+.export-import-buttons .polling-apply:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }

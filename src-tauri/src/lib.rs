@@ -170,7 +170,7 @@ fn get_work_area_for_monitor(_monitor_x: i32, _monitor_y: i32) -> Option<[i32; 4
 }
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
 
 struct AppState {
@@ -179,44 +179,27 @@ struct AppState {
     polling_interval_ms: Arc<AtomicU64>,
 }
 
-/// 메시지 조건 항목 (messages.json의 각 항목)
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct PetMessage {
-    target: String,
-    condition: String,
-    value: f64,
-    priority: i32,
-    text: String,
-}
-
-/// messages.json 최상위 구조
-#[derive(serde::Deserialize)]
-struct MessagesConfig {
-    messages: Vec<PetMessage>,
-}
-
-/// 실행 파일과 같은 경로의 messages.json을 읽어 반환
-/// 파일이 없거나 파싱 오류 시 빈 배열 반환 → 프론트엔드에서 메시지 미표시
+/// 모니터링 메시지 동기화 (설정 → 메인 윈도우 이벤트 릴레이)
 #[tauri::command]
-fn load_messages() -> Vec<PetMessage> {
-    let exe_path = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
-    };
-    let exe_dir = match exe_path.parent() {
-        Some(d) => d,
-        None => return Vec::new(),
-    };
-    let messages_path = exe_dir.join("messages.json");
+fn update_messages(app: AppHandle, messages: serde_json::Value) {
+    let _ = app.emit("messages-update", messages);
+}
 
-    let content = match std::fs::read_to_string(&messages_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+/// 메시지 순환 표시 설정 동기화 (설정 → 메인 윈도우 이벤트 릴레이)
+#[tauri::command]
+fn update_msg_rotate(app: AppHandle, show_all: bool, interval: u32) {
+    let _ = app.emit("msg-rotate-update", serde_json::json!({
+        "showAll": show_all,
+        "interval": interval
+    }));
+}
 
-    match serde_json::from_str::<MessagesConfig>(&content) {
-        Ok(config) => config.messages,
-        Err(_) => Vec::new(),
+/// 프론트엔드 렌더링 완료 후 메인 윈도우 표시 (검은 창 깜빡임 방지)
+#[tauri::command]
+fn show_main_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_always_on_top(true);
     }
 }
 
@@ -228,18 +211,21 @@ fn set_hover(state: State<'_, AppState>, hovered: bool) {
 }
 
 #[tauri::command]
-fn set_test_cpu(state: State<'_, AppState>, usage: i32) {
+fn set_test_cpu(app: AppHandle, state: State<'_, AppState>, usage: i32) {
     state.test_cpu.store(usage, Ordering::Relaxed);
+    // 테스트 모드 상태를 메인 윈도우에 동기화
+    let _ = app.emit("test-mode-sync", usage);
 }
 
 #[tauri::command]
-fn update_pet_color(app: AppHandle, hue: i32, saturation: i32, brightness: i32) {
+fn update_pet_color(app: AppHandle, hue: i32, saturation: i32, brightness: i32, opacity: i32) {
     let _ = app.emit(
         "color-update",
         serde_json::json!({
             "hue": hue,
             "saturation": saturation,
-            "brightness": brightness
+            "brightness": brightness,
+            "opacity": opacity
         }),
     );
 }
@@ -250,9 +236,37 @@ fn set_polling_interval(state: State<'_, AppState>, seconds: u64) {
     state.polling_interval_ms.store(ms, Ordering::Relaxed);
 }
 
+/// 알림 목록을 설정 윈도우 → 메인 윈도우로 동기화
+#[tauri::command]
+fn update_alarm_list(app: AppHandle, alarms: serde_json::Value) {
+    let _ = app.emit("alarm-list-update", alarms);
+}
+
+/// 표시 설정(모니터링/알림 문구 표시 여부, 알림 표시 시간)을 동기화
+#[tauri::command]
+fn update_display_config(app: AppHandle, show_monitoring: bool, show_notification: bool, notification_priority: bool, notification_mode: String, notification_duration: u32) {
+    let _ = app.emit("display-config-update", serde_json::json!({
+        "showMonitoringText": show_monitoring,
+        "showNotificationText": show_notification,
+        "notificationPriority": notification_priority,
+        "notificationMode": notification_mode,
+        "notificationDuration": notification_duration
+    }));
+}
+
 #[tauri::command]
 fn update_bubble_enabled(app: AppHandle, enabled: bool) {
     let _ = app.emit("bubble-enabled-update", enabled);
+}
+
+/// 폰트/언어 설정 동기화 (설정 → 메인 윈도우)
+#[tauri::command]
+fn update_app_settings(app: AppHandle, language: String, font_size: u32, font_family: String) {
+    let _ = app.emit("app-settings-update", serde_json::json!({
+        "language": language,
+        "fontSize": font_size,
+        "fontFamily": font_family
+    }));
 }
 
 #[tauri::command]
@@ -266,6 +280,83 @@ fn update_monitor_config(app: AppHandle, cpu: bool, memory: bool, network: bool,
             "battery": battery
         }),
     );
+}
+
+/// 자동 실행 레지스트리 조회
+#[tauri::command]
+fn get_auto_start() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("reg")
+            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskBone"])
+            .output();
+        matches!(output, Ok(o) if o.status.success())
+    }
+    #[cfg(not(target_os = "windows"))]
+    { false }
+}
+
+/// 자동 실행 레지스트리 설정/해제
+#[tauri::command]
+fn set_auto_start(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        if enabled {
+            // 현재 실행 파일 경로를 레지스트리에 등록
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe_path = exe.to_string_lossy().to_string();
+            let output = Command::new("reg")
+                .args(["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskBone", "/t", "REG_SZ", "/d", &exe_path, "/f"])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            }
+        } else {
+            let output = Command::new("reg")
+                .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskBone", "/f"])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    { Ok(()) }
+}
+
+/// 설정 윈도우 열기 (이미 열려있으면 포커스)
+fn open_or_focus_settings(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.set_focus();
+    } else {
+        let _ = tauri::webview::WebviewWindowBuilder::new(
+            app,
+            "settings",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("설정")
+        .inner_size(850.0, 600.0)
+        .min_inner_size(640.0, 600.0)
+        .decorations(true)
+        .resizable(true)
+        .center()
+        .skip_taskbar(false)
+        .visible(false)
+        .build();
+        if let Some(w) = app.get_webview_window("settings") {
+            let w2 = w.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let _ = w2.show();
+                let _ = w2.set_focus();
+            });
+        }
+    }
 }
 
 /// 현재 실행 상태에 따라 트레이 메뉴를 동적으로 빌드
@@ -325,45 +416,33 @@ pub fn run() {
             // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         // move: is_running_tray/t1/t2, thread_hover_state 를 클로저 안으로 이동
         .setup(move |app| {
             // 트레이 메뉴 초기 빌드 (실행 중 상태 → 중지 메뉴 표시)
             let menu = build_tray_menu(app.handle(), true)?;
 
             if let Some(icon) = app.default_window_icon().cloned() {
+                // 시스템 언어에 따라 트레이 툴팁 설정
+                let tooltip = if sys_locale::get_locale()
+                    .unwrap_or_default()
+                    .starts_with("ko")
+                {
+                    "작업 뼈다귀"
+                } else {
+                    "TaskBone"
+                };
+
                 TrayIconBuilder::with_id("main-tray")
                     .icon(icon)
                     .menu(&menu)
+                    .tooltip(tooltip)
                     .show_menu_on_left_click(false)
                     .on_menu_event(move |app, event| {
                         match event.id().as_ref() {
                             "settings" => {
-                                if let Some(w) = app.get_webview_window("settings") {
-                                    let _ = w.set_focus();
-                                } else {
-                                    let _ = tauri::webview::WebviewWindowBuilder::new(
-                                        app,
-                                        "settings",
-                                        tauri::WebviewUrl::App("index.html".into()),
-                                    )
-                                    .title("설정")
-                                    .inner_size(640.0, 600.0)
-                                    .decorations(true)
-                                    .resizable(true)
-                                    .center()
-                                    .skip_taskbar(false) // 설정 창은 작업표시줄에 표시
-                                    .visible(false) // 콘텐츠 로드 완료 후 표시
-                                    .build();
-                                    // 콘텐츠 로드 시간 확보 후 창 표시 (흰색 플래시 방지)
-                                    if let Some(w) = app.get_webview_window("settings") {
-                                        let w2 = w.clone();
-                                        std::thread::spawn(move || {
-                                            std::thread::sleep(std::time::Duration::from_millis(150));
-                                            let _ = w2.show();
-                                            let _ = w2.set_focus();
-                                        });
-                                    }
-                                }
+                                open_or_focus_settings(app);
                             }
                             "quit" => {
                                 app.exit(0);
@@ -402,6 +481,12 @@ pub fn run() {
                                 }
                             }
                             _ => {}
+                        }
+                    })
+                    // 트레이 아이콘 더블클릭 시 설정 창 열기
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } = event {
+                            open_or_focus_settings(tray.app_handle());
                         }
                     })
                     .build(app)?;
@@ -467,8 +552,8 @@ pub fn run() {
 
             // 글로벌 공유 CPU 상태 (f32를 원자적으로 다루기 위해 bits 변환해서 AtomicU32 사용)
             let shared_cpu_usage = Arc::new(AtomicU32::new(0f32.to_bits()));
-            // 추가: 글로벌 공유 모니터 정보 캐시 (1초 갱신)
-            let shared_monitors = Arc::new(RwLock::new(Vec::<MonitorInfo>::new()));
+            // 추가: 글로벌 공유 모니터 정보 캐시 (1초 갱신, Arc로 감싸 clone 비용 제거)
+            let shared_monitors: Arc<RwLock<Arc<Vec<MonitorInfo>>>> = Arc::new(RwLock::new(Arc::new(Vec::new())));
 
             // 초기 모니터 정보 캐싱 (첫 1초 동안 이동 가능하도록)
             if let Ok(monitors) = window_clone.available_monitors() {
@@ -493,7 +578,7 @@ pub fn run() {
                     .collect();
                 // shared_monitors 초기화
                 if let Ok(mut cache) = shared_monitors.write() {
-                    *cache = info_list;
+                    *cache = Arc::new(info_list);
                 }
             }
 
@@ -515,6 +600,7 @@ pub fn run() {
 
                 // 네트워크 모니터링 초기화
                 let mut networks = sysinfo::Networks::new_with_refreshed_list();
+                let mut network_refresh_tick: u32 = 0;
 
                 // 배터리 모니터링 초기화
                 let battery_manager = starship_battery::Manager::new().ok();
@@ -548,32 +634,34 @@ pub fn run() {
 
                     cpu_usage_clone.store(usage.to_bits(), Ordering::Relaxed);
 
-                    // 2. 모니터 정보 갱신 (1초마다 OS에 질의)
+                    // 2. 모니터 정보 갱신 (1초마다 OS에 질의, Arc swap으로 clone 비용 제거)
                     if let Ok(m_list) = window_clone_evt.available_monitors() {
+                        let mut new_monitors = Vec::new();
+                        for m in m_list {
+                            let mx = m.position().x;
+                            let my = m.position().y;
+                            let mh = m.size().height as i32;
+                            let work_bottom = get_work_area_for_monitor(mx, my)
+                                .map(|rc| rc[3])
+                                .unwrap_or(my + mh);
+                            new_monitors.push(MonitorInfo {
+                                x: mx,
+                                y: my,
+                                width: m.size().width as i32,
+                                height: mh,
+                                scale_factor: m.scale_factor(),
+                                work_bottom,
+                            });
+                        }
                         if let Ok(mut cache) = monitors_clone.write() {
-                            cache.clear();
-                            for m in m_list {
-                                let mx = m.position().x;
-                                let my = m.position().y;
-                                let mh = m.size().height as i32;
-                                let work_bottom = get_work_area_for_monitor(mx, my)
-                                    .map(|rc| rc[3])
-                                    .unwrap_or(my + mh);
-                                cache.push(MonitorInfo {
-                                    x: mx,
-                                    y: my,
-                                    width: m.size().width as i32,
-                                    height: mh,
-                                    scale_factor: m.scale_factor(),
-                                    work_bottom,
-                                });
-                            }
+                            *cache = Arc::new(new_monitors);
                         }
                     }
 
-                    // monitors 락을 짧게 잡아 스냅샷 복사 → 락 해제 후 EnumWindows 실행
-                    let monitors_snapshot =
-                        monitors_clone.read().map(|g| g.clone()).unwrap_or_default();
+                    // monitors 락을 짧게 잡아 Arc 참조만 복사 → 락 해제 후 EnumWindows 실행
+                    let monitors_snapshot = monitors_clone.read()
+                        .map(|g| Arc::clone(&g))
+                        .unwrap_or_else(|_| Arc::new(Vec::new()));
 
                     // 모니터 수 변경 감지: 모니터 분리/연결 시 윈도우 복구
                     let cur_monitor_count = monitors_snapshot.len();
@@ -628,7 +716,9 @@ pub fn run() {
                     let _ = window_clone_evt.emit("memory-usage", mem_pct);
 
                     // 네트워크: 1초간 수신/송신 바이트 (refresh 간격 = 1초이므로 곧 bytes/sec)
-                    networks.refresh(true);
+                    // 30초마다 인터페이스 목록 재구성, 그 외에는 통계만 갱신
+                    networks.refresh(network_refresh_tick == 0);
+                    network_refresh_tick = (network_refresh_tick + 1) % 30;
                     let mut down_bytes: u64 = 0;
                     let mut up_bytes: u64 = 0;
                     for (_name, data) in networks.iter() {
@@ -683,6 +773,12 @@ pub fn run() {
                 let mut prev_scale: f64 = 1.0; // 이전 프레임의 모니터 scale (프레임 간 유지하여 center_x 진동 방지)
                 let mut smooth_y: f64 = 0.0;   // Y 위치 보간용 (모니터 전환 시 높이 점프 방지)
                 let mut smooth_y_init = false;
+                // 윈도우 물리 높이 캐시 (DPI 변경 시에만 갱신, 매 프레임 IPC 호출 제거)
+                let mut cached_win_h: i32 = window_clone
+                    .outer_size()
+                    .map(|s| s.height as i32)
+                    .unwrap_or((LOGICAL_WIN_H * prev_scale) as i32);
+                let mut cached_scale_for_h: f64 = prev_scale;
                 loop {
                     // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
                     if !is_running_t2.load(Ordering::Relaxed) {
@@ -711,7 +807,8 @@ pub fn run() {
 
                     // Calc movement
                     let now = std::time::Instant::now();
-                    let delta_time = now.duration_since(last_update).as_secs_f64();
+                    // 시스템 부하 시 큰 점프 방지: delta_time 상한 50ms (3프레임 분량)
+                    let delta_time = now.duration_since(last_update).as_secs_f64().min(0.05);
                     last_update = now;
 
                     // CPU 사용률에 비례한 속도 (0%→1x, 50%→3x, 100%→5x)
@@ -746,11 +843,15 @@ pub fn run() {
                             // 이전 프레임의 scale로 정확한 윈도우 중심 계산 (경계 진동 방지)
                             let center_x = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
 
-                            // OS가 보고하는 실제 윈도우 물리 높이 (DPI 전환 시에도 정확)
-                            let actual_win_h = window_clone
-                                .outer_size()
-                                .map(|s| s.height as i32)
-                                .unwrap_or((LOGICAL_WIN_H * prev_scale) as i32);
+                            // DPI 전환 시에만 윈도우 높이 재조회 (매 프레임 IPC 호출 제거)
+                            if prev_scale != cached_scale_for_h {
+                                cached_win_h = window_clone
+                                    .outer_size()
+                                    .map(|s| s.height as i32)
+                                    .unwrap_or((LOGICAL_WIN_H * prev_scale) as i32);
+                                cached_scale_for_h = prev_scale;
+                            }
+                            let actual_win_h = cached_win_h;
 
                             for m in monitors.iter() {
                                 let px = m.x;
@@ -858,13 +959,20 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            show_main_window,
             set_hover,
             set_test_cpu,
             update_pet_color,
             update_monitor_config,
-            load_messages,
             set_polling_interval,
-            update_bubble_enabled
+            update_bubble_enabled,
+            update_alarm_list,
+            update_display_config,
+            update_messages,
+            update_msg_rotate,
+            update_app_settings,
+            get_auto_start,
+            set_auto_start
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,73 @@
-# Tauri + React + Typescript
+# TaskBone - 시스템 모니터링 데스크톱 펫
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Tauri + React + TypeScript 기반의 데스크톱 펫 애플리케이션.
+화면 하단을 달리는 스켈레톤 캐릭터가 시스템 상태를 모니터링하고 알림을 표시합니다.
 
-## Recommended IDE Setup
+## 핵심 기능
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+### 펫 캐릭터
+- 화면 하단에서 좌→우로 이동하며, 멀티 모니터 간 자유롭게 이동
+- CPU 사용률에 비례한 이동 속도 (0%→1x, 100%→5x)
+- 좌클릭: 아파하는 모션, 우클릭: 무기 교체 (맨손/검/검+방패)
+- 마우스 호버: 휴식 모션 + 시스템 수치 말풍선 표시
+- 전체화면 앱 위에서는 자동으로 뒤로 숨김
+
+### 시스템 모니터링
+- CPU 사용률, 메모리 사용률, 네트워크 속도, 배터리 잔량
+- 마우스 호버 시 말풍선으로 선택한 항목 표시
+- 설정 화면에서 조건별 메시지 추가/삭제 가능 (대상, 조건, 값, 우선순위, 문구 설정)
+- 메시지 입력 시 이모지 피커로 이모지 삽입 가능
+- 조건에 맞는 모든 메시지 순환 표시 (설정한 초 간격으로 순번 표시) 또는 우선순위 1개만 표시 선택 가능
+
+### 알림 시스템
+5가지 알림 타입 지원:
+- **반복 (Interval)**: 시작 시점부터 지정 간격(분)마다 반복 알림
+- **특정 시간 (Absolute)**: 오늘 날짜의 지정 시각에 1회 알림
+- **매일 (Daily)**: 매일 지정 시각에 반복 알림
+- **타이머 (Relative)**: 지금부터 N시간/N분 후 1회 알림
+- **매시 (Hourly)**: 매 시간 지정 분(0~59)에 반복 알림
+
+표시 설정:
+- 모니터링 문구 / 알림 문구 개별 표시 제어
+- 알림 표시 시간(초) 설정
+- 알림 중복 표시 모드: 모두 표시 / 먼저 표시된 메시지 우선 / 최근 메시지 우선
+- 두 문구 동시 표시 시 알림(위) + 모니터링(아래) 배치
+- 말풍선 사용 해제 시 모든 문구 미표시
+
+### 설정
+- 트레이 아이콘 더블클릭 또는 우클릭 → 설정 메뉴
+- 테스트 모드 (가상 CPU 부하 설정)
+- 펫 색상 커스터마이징 (2D 컬러 피커)
+- 모니터링 항목 선택
+- 모니터링 메시지 관리 (추가/삭제/저장/가져오기)
+- 알림 관리 (추가/삭제/활성화 토글/저장/가져오기), 알림 문구 이모지 피커
+- 폴링 간격 설정, 말풍선 사용 토글, 알림 우선 표시
+- 자동 실행 설정 (Windows 레지스트리 등록/해제)
+- 폰트 크기 (8~20px), 폰트 변경
+- 다국어 지원 (시스템 언어/한국어/영어)
+
+## 실행 방법
+
+```bash
+npm install
+npm run tauri dev
+```
+
+## 빌드
+
+```bash
+npm run tauri build
+```
+
+## 아키텍처
+
+```
+src-tauri/src/lib.rs    Rust 백엔드 (시스템 모니터링, 윈도우 관리, 트레이)
+src/App.tsx             React 프론트엔드 (펫 렌더링, 설정 UI, 알림 타이머)
+src/App.css             스타일시트
+```
+
+- **Thread 1**: CPU/메모리/네트워크/배터리 폴링 + 모니터 스캔 (1초 간격)
+- **Thread 2**: 윈도우 이동 + SetWindowPos 직접 호출 (~60 FPS)
+- **프론트엔드**: React 상태 관리 + Web Animations API + 알림 타이머
+- **윈도우 간 통신**: Tauri 이벤트 시스템 + localStorage 공유

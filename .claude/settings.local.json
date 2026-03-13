@@ -7,7 +7,20 @@
       "Bash(netstat:*)",
       "Bash(npx tsc:*)",
       "Bash(tasklist:*)",
-      "Bash(export:*)"
+      "Bash(export:*)",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\" && cargo build --manifest-path src-tauri/Cargo.toml 2>&1)",
+      "Skill(systematic-debugging)",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\\\\src-tauri\" && cargo build 2>&1 | tail -3)",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\\\\src-tauri\" && cargo check 2>&1)",
+      "Bash(cd \"D:/Personal Project/Windows/monitoring/my-pet/src-tauri\" && cargo check 2>&1)",
+      "Bash(taskkill //PID 12232 //F)",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\" && npm install @tauri-apps/plugin-dialog @tauri-apps/plugin-fs)",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\" && grep -n 'windowLabel !== \"main\"\\\\|windowLabel === \"main\"' src/App.tsx | head -20)",
+      "Bash(magick --version 2>/dev/null || echo \"no magick\")",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\" && npx tauri icon \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\TaskBone.ico\" 2>&1)",
+      "Bash(echo $SKILLSMP_API_KEY | head -c 10)",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\\\\src-tauri\" && cargo check 2>&1 | tail -20)",
+      "Bash(cd \"D:\\\\Personal Project\\\\Windows\\\\monitoring\\\\my-pet\\\\src-tauri\" && cargo check 2>&1 | tail -10)"
     ]
   }
 }
