@@ -17,6 +17,7 @@ import {
   FONT_SIZE_OPTIONS,
   FONT_FAMILY_OPTIONS,
   FONT_COLOR_PALETTE,
+  MOVE_MODES,
   PET_TYPES,
   RANDOM_PET_ID,
   generateAlarmId,
@@ -90,6 +91,12 @@ export default function SettingsWindow() {
   })();
   const hasBattery = storedBatteryPercent >= 0;
 
+  // 이동 모드 상태
+  const [moveMode, setMoveMode] = useState<number>(() => {
+    const saved = localStorage.getItem('moveMode');
+    return saved !== null ? Number(saved) : 0;
+  });
+
   // 설정: 폴링 간격 (초)
   const [pollingInput, setPollingInput] = useState<string>(() => {
     const saved = localStorage.getItem('pollingInterval');
@@ -129,6 +136,14 @@ export default function SettingsWindow() {
 
   const [bubbleEnabled, setBubbleEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem('bubbleEnabled');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [bubbleSide, setBubbleSide] = useState<boolean>(() => {
+    const saved = localStorage.getItem('bubbleSide');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [bubbleTop, setBubbleTop] = useState<boolean>(() => {
+    const saved = localStorage.getItem('bubbleTop');
     return saved !== null ? saved === 'true' : true;
   });
 
@@ -210,9 +225,11 @@ export default function SettingsWindow() {
       localStorage.setItem('monitorConfig', JSON.stringify(monitorConfig));
       localStorage.setItem('mouseEnabled', String(mouseEnabled));
       localStorage.setItem('bubbleEnabled', String(bubbleEnabled));
+      localStorage.setItem('bubbleSide', String(bubbleSide));
+      localStorage.setItem('bubbleTop', String(bubbleTop));
     }, 500);
     return () => clearTimeout(timer);
-  }, [hue, saturation, brightness, petOpacity, monitorConfig, mouseEnabled, bubbleEnabled]);
+  }, [hue, saturation, brightness, petOpacity, monitorConfig, mouseEnabled, bubbleEnabled, bubbleSide, bubbleTop]);
 
   // 컴포넌트 언마운트 시 pending rAF 정리
   useEffect(() => {
@@ -576,6 +593,11 @@ export default function SettingsWindow() {
             </button>
           </li>
           <li>
+            <button className={`sidebar-item ${settingsTab === "movement" ? "active" : ""}`} onClick={() => setSettingsTab("movement")}>
+              {t('sidebar.movement')}
+            </button>
+          </li>
+          <li>
             <button className={`sidebar-item ${settingsTab === "monitoring" ? "active" : ""}`} onClick={() => setSettingsTab("monitoring")}>
               {t('sidebar.monitoring')}
             </button>
@@ -633,6 +655,34 @@ export default function SettingsWindow() {
                   className="test-slider-large"
                 />
               </div>
+            </div>
+          </div>
+        )}
+
+        {settingsTab === "movement" && (
+          <div className="settings-section">
+            <h3>{t('movement.title')}</h3>
+            <p className="description">{t('movement.description')}</p>
+            <div className="move-mode-list">
+              {MOVE_MODES.map(mode => (
+                <label key={mode.id} className={`move-mode-item${moveMode === mode.id ? ' active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="moveMode"
+                    value={mode.id}
+                    checked={moveMode === mode.id}
+                    onChange={() => {
+                      setMoveMode(mode.id);
+                      localStorage.setItem('moveMode', String(mode.id));
+                      invoke('update_move_mode', { mode: mode.id });
+                    }}
+                  />
+                  <div className="move-mode-text">
+                    <span className="move-mode-name">{t(mode.nameKey)}</span>
+                    <span className="move-mode-desc">{t(mode.descriptionKey)}</span>
+                  </div>
+                </label>
+              ))}
             </div>
           </div>
         )}
@@ -1457,6 +1507,32 @@ export default function SettingsWindow() {
                     }}
                   />
                   <span className="setting-label">{t('general.bubbleLabel')}</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingLeft: '26px', opacity: bubbleEnabled ? 1 : 0.4 }}>
+                  <input
+                    type="checkbox"
+                    checked={bubbleSide}
+                    disabled={!bubbleEnabled}
+                    onChange={(e) => {
+                      setBubbleSide(e.target.checked);
+                      localStorage.setItem('bubbleSide', String(e.target.checked));
+                      invoke("update_bubble_side", { enabled: e.target.checked });
+                    }}
+                  />
+                  <span className="setting-label">{t('general.bubbleSide')}</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingLeft: '26px', opacity: bubbleEnabled ? 1 : 0.4 }}>
+                  <input
+                    type="checkbox"
+                    checked={bubbleTop}
+                    disabled={!bubbleEnabled}
+                    onChange={(e) => {
+                      setBubbleTop(e.target.checked);
+                      localStorage.setItem('bubbleTop', String(e.target.checked));
+                      invoke("update_bubble_top", { enabled: e.target.checked });
+                    }}
+                  />
+                  <span className="setting-label">{t('general.bubbleTop')}</span>
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingLeft: '26px', opacity: bubbleEnabled ? 1 : 0.4 }}>
                   <span className="setting-label">{t('general.bubbleHeight')}</span>

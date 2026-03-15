@@ -1,6 +1,19 @@
 # 프로젝트 진행 기록 (Notes)
 
 ## 최근 변경
+- 2026-03-15: 등반/하강 위치 오류 수정 — 모니터 좌표(x, y, width, height)를 Tauri API 대신 Win32 GetMonitorInfoW에서 직접 취득하여 SetWindowPos와 동일 좌표 공간(물리 픽셀) 보장. DPI 스케일링 시 Tauri가 반환하는 좌표와 SetWindowPos 좌표의 불일치로 등반 위치가 화면 중간에 표시되던 문제 해결. pet_visual_w도 CSS→물리 픽셀 변환(×prev_scale) 추가.
+- 2026-03-15: 전체화면 감지 하이브리드 방식으로 수정 — SHQueryUserNotificationState O(1) 프리체크 + true일 때만 EnumWindows로 펫이 있는 모니터의 전체화면 여부 확인. 기존 시스템 전체 감지(모든 모니터 NOTOPMOST)로 인한 등반/하강 표시 오류 해결. 평상시 EnumWindows 호출 제거, 전체화면 앱 존재 시에만 per-monitor 판정.
+- 2026-03-15: available_monitors() IPC 호출 빈도 감소 — 모니터 정보 갱신을 매 1초 → 10초 간격으로 변경. IPC 왕복 + get_work_area_for_monitor Win32 API 호출 90% 감소. 전체화면 감지(EnumWindows)는 매 폴링 유지.
+- 2026-03-15: SetWindowPos 추가 최적화 — (1) 위치 미변경 시 호출 생략: 이전 좌표 캐시로 동일 위치 프레임에서 SetWindowPos 완전 제거 (호버 시 100%, 저속 이동 시 부분 생략), (2) SWP_NOSENDCHANGING 추가: WM_WINDOWPOSCHANGING 메시지 생략으로 메시지 체인 오버헤드 감소.
+- 2026-03-15: SetWindowPos Z-order 분리 최적화 — 일반 프레임은 SWP_NOZORDER로 위치만 이동, ~500ms(30프레임)마다 또는 전체화면 전환/모니터 변경/윈도우 복구 시에만 HWND_TOPMOST/NOTOPMOST 재적용. DWM Z-order 재계산 빈도를 60fps→2fps로 감소시켜 마우스 응답성 개선.
+- 2026-03-15: 좌우/상단 말풍선 표시 체크박스 추가 — 설정 > 말풍선 사용 하위에 "좌우 말풍선 표시"(Phase 1,3), "상단 말풍선 표시"(Phase 2) 체크박스 추가. 기본 체크. Rust 커맨드(update_bubble_side, update_bubble_top) + Tauri 이벤트로 설정↔메인 윈도우 동기화.
+- 2026-03-15: Phase 1→건너가기→Phase 2 방향/위치 버그 수정 — 등반 후 인접 모니터로 건너가서 상단 이동 시, 진입 쪽에서 출발하여 반대 방향으로 이동하도록 `random_dir_left = !is_left` 추가 및 위치 분기 교정.
+- 2026-03-15: '아무 곳으로 이동' 랜덤 모드 개선 — 등반 상단 건너가기 시 건너간 모니터에서 상단 이동/하강 50% 랜덤 결정. 하강 완료 시 인접 모니터 건너가기 옵션 추가, 건너간 모니터에서 하단 이동/등반 50% 랜덤 결정.
+- 2026-03-15: '아무 곳으로 이동' 랜덤 모드 추가 — mode 4. 시작 방향 랜덤, 모니터 경계마다 등반/건너가기 50% 랜덤, 등반 상단 도달 시 인접 모니터 건너가기 50% 랜덤, Phase 2 끝에서 하강/건너가기 50% 랜덤, 하강 완료 시 다음 방향 랜덤 재결정. `move-direction` 이벤트로 프론트엔드 CSS 방향(scaleX) 동적 동기화.
+- 2026-03-15: 왼쪽 방향 이동 모드 추가 — '기본 이동'→'기본 이동 (오른쪽)', '등반 이동'→'등반 이동 (오른쪽)'으로 이름 변경. '기본 이동 (왼쪽)', '등반 이동 (왼쪽)' 2개 모드 신규 추가. 왼쪽 모드: CSS scaleX(-1)로 펫 좌우 반전, Rust 이동 방향 역전(Phase 0/2), 등반/하강 벽면 좌우 교체(Phase 1→왼쪽 벽, Phase 3→오른쪽 벽). types.ts MOVE_MODES 4항목, locales.ts 한/영 번역 추가.
+- 2026-03-15: 등반/건너가기 50% 확률 수정 — `rand` 크레이트 `rng.gen_bool(0.5)` 사용으로 교체.
+- 2026-03-15: 등반 이동 모드 경계 판정 개선 — pet_visual_w로 4개 phase 경계 판정 보정. Phase 전환 시 SetWindowPos를 1프레임 건너뛰어(continue) 프론트엔드 CSS 회전 적용 전 깜빡임 방지.
+- 2026-03-15: 등반 이동 모드 추가 — 설정 > "펫 이동" 탭에서 "기본 이동"/"등반 이동" 라디오버튼으로 선택 가능. 등반 모드: 모니터 하단→우측 등반→상단(거꾸로)→좌측 하강 4-phase 순회. 멀티모니터 지원(모니터 간 전환 시 50% 확률 등반/건너가기). CSS transform으로 phase별 스프라이트 회전(rotate). Rust Thread 2에 상태 머신 구현, `move-phase` 이벤트로 프론트엔드 동기화. `MOVE_MODES` 상수 배열로 확장 가능 설계.
 - 2026-03-15: 듀얼 모니터 연결 시 캐릭터 미표시(테두리만 이동) 버그 수정 — 모니터 핫플러그 시 WebView GPU 렌더링 컨텍스트 손실로 투명도가 깨지는 문제 해결. Thread 1에서 모니터 수 변경 감지 시 `set_size()` 재호출로 WebView 렌더링 표면 갱신 트리거 + `needs_redraw` 공유 플래그로 Thread 2에 전달. Thread 2에서 `SWP_FRAMECHANGED` 플래그 포함 `SetWindowPos` + `RedrawWindow`(RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW|RDW_FRAME)로 윈도우 프레임 속성 재적용 및 전체 렌더링 표면 강제 갱신. 높이 캐시 무효화로 DPI 변경 대응.
 - 2026-03-14: "아무거나" 랜덤 펫 선택 기능 추가 — 펫 목록 첫 번째에 "아무거나" 항목 추가. 선택 시 앱 실행마다 PET_TYPES에서 무작위 펫 표시. `RANDOM_PET_ID`/`resolveRandomPetId` 상수·함수 추가(types.ts). MainWindow에서 시작 시 1회 해결(`resolvedInitialPetId` ref), 설정 변경 시 즉시 랜덤 해결. localStorage에는 'random' 유지.
 - 2026-03-14: 자동차(1) 펫 추가 — 5개 개별 프레임(184x68px)을 스프라이트 스트립으로 합성. 이동/idle 공용 5프레임, hurt 1프레임. frameWidth: 184, frameHeight: 68.

@@ -1,15 +1,24 @@
-html,
+html {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: transparent !important;
+  user-select: none;
+  /* 뷰포트 스크롤바 방지 */
+  overflow: hidden;
+}
+
 body,
 #root {
   margin: 0;
   padding: 0;
   width: 100vw;
   height: 100vh;
-  /* 핵심: 배경을 완전히 투명하게 설정 */
   background-color: transparent !important;
-  /* 핵심: 드래그 선택 및 기본 커서 이벤트 방지 */
   user-select: none;
-  overflow: hidden;
+  /* 등반/하강 시 회전된 컨테이너가 잘리지 않도록 visible 처리 */
+  overflow: visible;
 }
 
 /* 햄스터를 담는 컨테이너 컨텍스트 */
@@ -773,4 +782,55 @@ body,
   border-color: #ff4757;
   box-shadow: 0 0 0 2px #ff4757, inset 0 0 0 1px rgba(255, 255, 255, 0.15);
   transform: scale(1.15);
+}
+
+/* 이동 모드 라디오 리스트 */
+.move-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.move-mode-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.move-mode-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.move-mode-item.active {
+  border-color: #ff4757;
+  background: rgba(255, 71, 87, 0.08);
+}
+
+.move-mode-item input[type="radio"] {
+  margin-top: 3px;
+  accent-color: #ff4757;
+}
+
+.move-mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.move-mode-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.move-mode-desc {
+  font-size: 11px;
+  color: #888;
 }

@@ -1,10 +1,40 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use rand::Rng;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+/// 전체화면 앱 실행 여부를 SHQueryUserNotificationState로 O(1) 판단
+/// EnumWindows 순회 없이 Windows 셸이 관리하는 상태를 직접 조회
+#[cfg(target_os = "windows")]
+fn is_fullscreen_app_running() -> bool {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHQueryUserNotificationState(pquns: *mut u32) -> i32;
+    }
+
+    // QUNS_RUNNING_D3D_FULL_SCREEN = 3, QUNS_PRESENTATION_MODE = 4
+    const QUNS_RUNNING_D3D_FULL_SCREEN: u32 = 3;
+    const QUNS_PRESENTATION_MODE: u32 = 4;
+
+    unsafe {
+        let mut state: u32 = 0;
+        let hr = SHQueryUserNotificationState(&mut state);
+        if hr == 0 {
+            state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_fullscreen_app_running() -> bool {
+    false
+}
 
 /// 한 번의 EnumWindows 순회로 여러 모니터의 전체화면 여부를 동시에 체크
 /// monitors 슬라이스와 같은 길이의 bool 배열 반환 (인덱스 대응)
-/// N번 호출 → 1번으로 줄여 API 오버헤드 감소
+/// is_fullscreen_app_running()이 true일 때만 호출하여 불필요한 EnumWindows 제거
 #[cfg(target_os = "windows")]
 fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
     if monitors.is_empty() {
@@ -60,8 +90,6 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
         }
 
         // 투명 오버레이 및 도구 창 제외
-        // - WS_EX_LAYERED: OBS 오버레이, Steam 오버레이, 자체 Tauri 창 등 투명 창
-        // - WS_EX_TOOLWINDOW: ALT+TAB에 표시되지 않는 플로팅 도구 창
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
         if ex_style & WS_EX_LAYERED != 0 || ex_style & WS_EX_TOOLWINDOW != 0 {
             return 1;
@@ -89,11 +117,7 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
             }
         }
         // 모든 모니터가 전체화면으로 확정되면 조기 종료
-        if all_found {
-            0
-        } else {
-            1
-        }
+        if all_found { 0 } else { 1 }
     }
 
     let mut result = vec![false; monitors.len()];
@@ -115,7 +139,7 @@ fn check_fullscreen_all(monitors: &[MonitorInfo]) -> Vec<bool> {
 
 // 윈도우 논리 크기 상수 (set_size에서 Logical으로 설정하는 값)
 const LOGICAL_WIN_W: f64 = 200.0;
-const LOGICAL_WIN_H: f64 = 150.0;
+const LOGICAL_WIN_H: f64 = 200.0;
 
 #[derive(Clone, Default)]
 struct MonitorInfo {
@@ -127,9 +151,10 @@ struct MonitorInfo {
     work_bottom: i32, // 작업영역 하단 Y 절대좌표 (물리 픽셀) = 작업표시줄 상단
 }
 
-/// 모니터별 작업영역(work area)을 Win32 API로 조회하여 작업표시줄 높이를 정확히 산출
+/// 모니터의 전체 영역(rc_monitor)과 작업영역(rc_work)을 Win32 API로 직접 조회
+/// SetWindowPos와 동일한 좌표 공간(물리 픽셀) 보장 — Tauri API 좌표와의 불일치 방지
 #[cfg(target_os = "windows")]
-fn get_work_area_for_monitor(monitor_x: i32, monitor_y: i32) -> Option<[i32; 4]> {
+fn get_monitor_rects(monitor_x: i32, monitor_y: i32) -> Option<([i32; 4], [i32; 4])> {
     #[link(name = "user32")]
     extern "system" {
         fn MonitorFromPoint(pt_x: i32, pt_y: i32, flags: u32) -> isize;
@@ -160,12 +185,12 @@ fn get_work_area_for_monitor(monitor_x: i32, monitor_y: i32) -> Option<[i32; 4]>
         if GetMonitorInfoW(hmon, &mut mi) == 0 {
             return None;
         }
-        Some(mi.rc_work) // [left, top, right, bottom]
+        Some((mi.rc_monitor, mi.rc_work)) // ([left,top,right,bottom], [left,top,right,bottom])
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn get_work_area_for_monitor(_monitor_x: i32, _monitor_y: i32) -> Option<[i32; 4]> {
+fn get_monitor_rects(_monitor_x: i32, _monitor_y: i32) -> Option<([i32; 4], [i32; 4])> {
     None
 }
 
@@ -213,6 +238,23 @@ struct AppState {
     polling_interval_ms: Arc<AtomicU64>,
     /// 펫별 이동 속도 배율 (1.0 = 기본, 0.7 = 30% 느림)
     pet_speed_factor: Arc<AtomicU32>,
+    /// 이동 모드 (0=기본, 1=등반, 2+=추후 확장)
+    move_mode: Arc<AtomicU8>,
+    /// 펫 스프라이트의 실제 렌더링 너비 (CSS px, 경계 판정용)
+    pet_visual_w: Arc<AtomicI32>,
+}
+
+/// 펫 스프라이트의 실제 렌더링 너비 갱신 (CSS px 단위)
+#[tauri::command]
+fn update_pet_visual_w(state: State<'_, AppState>, width: i32) {
+    state.pet_visual_w.store(width, Ordering::Relaxed);
+}
+
+/// 이동 모드 변경 (0=기본, 1=등반, 2+=추후 확장)
+#[tauri::command]
+fn update_move_mode(app: AppHandle, state: State<'_, AppState>, mode: u8) {
+    state.move_mode.store(mode, Ordering::Relaxed);
+    let _ = app.emit("move-mode-update", mode);
 }
 
 /// 모니터링 메시지 동기화 (설정 → 메인 윈도우 이벤트 릴레이)
@@ -325,6 +367,16 @@ fn update_mouse_enabled(app: AppHandle, enabled: bool) {
 #[tauri::command]
 fn update_bubble_enabled(app: AppHandle, enabled: bool) {
     let _ = app.emit("bubble-enabled-update", enabled);
+}
+
+#[tauri::command]
+fn update_bubble_side(app: AppHandle, enabled: bool) {
+    let _ = app.emit("bubble-side-update", enabled);
+}
+
+#[tauri::command]
+fn update_bubble_top(app: AppHandle, enabled: bool) {
+    let _ = app.emit("bubble-top-update", enabled);
 }
 
 #[tauri::command]
@@ -493,12 +545,22 @@ pub fn run() {
     let pet_speed_factor = Arc::new(AtomicU32::new(1.0f32.to_bits()));
     let pet_speed_factor_t2 = Arc::clone(&pet_speed_factor);
 
+    // 이동 모드 (0=기본, 1=등반)
+    let shared_move_mode = Arc::new(AtomicU8::new(0));
+    let move_mode_t2 = Arc::clone(&shared_move_mode);
+
+    // 펫 스프라이트 렌더링 너비 (CSS px, 기본 64)
+    let shared_pet_visual_w = Arc::new(AtomicI32::new(64));
+    let pet_visual_w_t2 = Arc::clone(&shared_pet_visual_w);
+
     tauri::Builder::default()
         .manage(AppState {
             is_hovered: app_state_hover,
             test_cpu: Arc::clone(&test_cpu),
             polling_interval_ms: Arc::clone(&polling_interval_ms),
             pet_speed_factor,
+            move_mode: Arc::clone(&shared_move_mode),
+            pet_visual_w: Arc::clone(&shared_pet_visual_w),
         })
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
             // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
@@ -600,14 +662,14 @@ pub fn run() {
             let mon_x = monitor.position().x;
             let mon_y = monitor.position().y;
             let mon_h = monitor.size().height as i32;
-            let work_bottom = get_work_area_for_monitor(mon_x, mon_y)
-                .map(|rc| rc[3])
+            let work_bottom = get_monitor_rects(mon_x, mon_y)
+                .map(|(_, rc_work)| rc_work[3])
                 .unwrap_or(mon_y + mon_h);
             // set_size 후 실제 물리 높이 조회 (150 * scale 추정값 대신 OS가 보고하는 정확한 값)
             let actual_init_h = window
                 .outer_size()
                 .map(|s| s.height as i32)
-                .unwrap_or((150.0 * scale_factor) as i32);
+                .unwrap_or((LOGICAL_WIN_H * scale_factor) as i32);
             let initial_y = work_bottom - actual_init_h;
             window
                 .set_position(tauri::Position::Physical(
@@ -644,26 +706,33 @@ pub fn run() {
             let shared_monitors: Arc<RwLock<Arc<Vec<MonitorInfo>>>> = Arc::new(RwLock::new(Arc::new(Vec::new())));
 
             // 초기 모니터 정보 캐싱 (첫 1초 동안 이동 가능하도록)
+            // Win32 GetMonitorInfoW에서 좌표를 직접 취득하여 SetWindowPos 좌표 공간 통일
             if let Ok(monitors) = window_clone.available_monitors() {
-                let info_list: Vec<MonitorInfo> = monitors
-                    .iter()
-                    .map(|m| {
-                        let x = m.position().x;
-                        let y = m.position().y;
-                        let height = m.size().height as i32;
-                        let work_bottom = get_work_area_for_monitor(x, y)
-                            .map(|rc| rc[3]) // 작업영역 하단 절대 Y좌표
-                            .unwrap_or(y + height);
-                        MonitorInfo {
-                            x,
-                            y,
-                            width: m.size().width as i32,
-                            height,
+                let mut info_list: Vec<MonitorInfo> = Vec::new();
+                for m in monitors.iter() {
+                    let mx = m.position().x;
+                    let my = m.position().y;
+                    if let Some((rc_mon, rc_work)) = get_monitor_rects(mx, my) {
+                        info_list.push(MonitorInfo {
+                            x: rc_mon[0],
+                            y: rc_mon[1],
+                            width: rc_mon[2] - rc_mon[0],
+                            height: rc_mon[3] - rc_mon[1],
                             scale_factor: m.scale_factor(),
-                            work_bottom,
-                        }
-                    })
-                    .collect();
+                            work_bottom: rc_work[3],
+                        });
+                    } else {
+                        let mh = m.size().height as i32;
+                        info_list.push(MonitorInfo {
+                            x: mx,
+                            y: my,
+                            width: m.size().width as i32,
+                            height: mh,
+                            scale_factor: m.scale_factor(),
+                            work_bottom: my + mh,
+                        });
+                    }
+                }
                 // shared_monitors 초기화
                 if let Ok(mut cache) = shared_monitors.write() {
                     *cache = Arc::new(info_list);
@@ -686,6 +755,9 @@ pub fn run() {
                 sys.refresh_memory();
                 let mut prev_on_fullscreen = false; // set_always_on_top 중복 호출 방지
                 let mut prev_monitor_count: usize = 0; // 모니터 수 변경 감지용
+
+                // 모니터 + 전체화면 갱신 주기 (10초마다, 첫 폴링은 즉시)
+                let mut monitor_refresh_tick: u32 = 0;
 
                 // 네트워크 모니터링 초기화
                 let mut networks = sysinfo::Networks::new_with_refreshed_list();
@@ -725,29 +797,42 @@ pub fn run() {
 
                     cpu_usage_clone.store(usage.to_bits(), Ordering::Relaxed);
 
-                    // 2. 모니터 정보 갱신 (1초마다 OS에 질의, Arc swap으로 clone 비용 제거)
-                    if let Ok(m_list) = window_clone_evt.available_monitors() {
-                        let mut new_monitors = Vec::new();
-                        for m in m_list {
-                            let mx = m.position().x;
-                            let my = m.position().y;
-                            let mh = m.size().height as i32;
-                            let work_bottom = get_work_area_for_monitor(mx, my)
-                                .map(|rc| rc[3])
-                                .unwrap_or(my + mh);
-                            new_monitors.push(MonitorInfo {
-                                x: mx,
-                                y: my,
-                                width: m.size().width as i32,
-                                height: mh,
-                                scale_factor: m.scale_factor(),
-                                work_bottom,
-                            });
-                        }
-                        if let Ok(mut cache) = monitors_clone.write() {
-                            *cache = Arc::new(new_monitors);
+                    // 2. 모니터 정보 (10초마다, IPC + Win32 API 호출 90% 감소)
+                    // 좌표는 Win32 GetMonitorInfoW에서 직접 취득하여 SetWindowPos와 동일 좌표 공간 보장
+                    if monitor_refresh_tick == 0 {
+                        if let Ok(m_list) = window_clone_evt.available_monitors() {
+                            let mut new_monitors = Vec::new();
+                            for m in m_list {
+                                let mx = m.position().x;
+                                let my = m.position().y;
+                                if let Some((rc_mon, rc_work)) = get_monitor_rects(mx, my) {
+                                    new_monitors.push(MonitorInfo {
+                                        x: rc_mon[0],
+                                        y: rc_mon[1],
+                                        width: rc_mon[2] - rc_mon[0],
+                                        height: rc_mon[3] - rc_mon[1],
+                                        scale_factor: m.scale_factor(),
+                                        work_bottom: rc_work[3],
+                                    });
+                                } else {
+                                    // Win32 API 실패 시 Tauri 값 사용 (fallback)
+                                    let mh = m.size().height as i32;
+                                    new_monitors.push(MonitorInfo {
+                                        x: mx,
+                                        y: my,
+                                        width: m.size().width as i32,
+                                        height: mh,
+                                        scale_factor: m.scale_factor(),
+                                        work_bottom: my + mh,
+                                    });
+                                }
+                            }
+                            if let Ok(mut cache) = monitors_clone.write() {
+                                *cache = Arc::new(new_monitors);
+                            }
                         }
                     }
+                    monitor_refresh_tick = (monitor_refresh_tick + 1) % 10;
 
                     // monitors 락을 짧게 잡아 Arc 참조만 복사 → 락 해제 후 EnumWindows 실행
                     let monitors_snapshot = monitors_clone.read()
@@ -783,22 +868,28 @@ pub fn run() {
                     }
                     prev_monitor_count = cur_monitor_count;
 
-                    let pet_x = pet_x_reader.load(Ordering::Relaxed);
-                    // 현재 위치의 모니터 scale을 찾아 물리 너비 절반을 계산
-                    let half_w = monitors_snapshot.iter()
-                        .find(|m| pet_x >= m.x as i64 && pet_x < (m.x + m.width) as i64)
-                        .map(|m| (LOGICAL_WIN_W / 2.0 * m.scale_factor) as i64)
-                        .unwrap_or((LOGICAL_WIN_W / 2.0) as i64);
-                    let center_x = pet_x + half_w;
-
-                    let fs_flags = check_fullscreen_all(&monitors_snapshot);
-
-                    let mut pet_on_fullscreen = false;
-                    for (m, &fs) in monitors_snapshot.iter().zip(fs_flags.iter()) {
-                        if center_x >= m.x as i64 && center_x < (m.x + m.width) as i64 && fs {
-                            pet_on_fullscreen = true;
+                    // 전체화면 감지: 하이브리드 방식
+                    // 1) SHQueryUserNotificationState O(1) 프리체크
+                    // 2) true일 때만 EnumWindows로 펫이 있는 모니터에 전체화면 앱이 있는지 확인
+                    let pet_on_fullscreen = if is_fullscreen_app_running() {
+                        // 시스템에 전체화면 앱 존재 → 펫이 있는 모니터인지 확인
+                        let pet_x = pet_x_reader.load(Ordering::Relaxed);
+                        let half_w = monitors_snapshot.iter()
+                            .find(|m| pet_x >= m.x as i64 && pet_x < (m.x + m.width) as i64)
+                            .map(|m| (LOGICAL_WIN_W / 2.0 * m.scale_factor) as i64)
+                            .unwrap_or((LOGICAL_WIN_W / 2.0) as i64);
+                        let center_x = pet_x + half_w;
+                        let fs_flags = check_fullscreen_all(&monitors_snapshot);
+                        let mut on_fs = false;
+                        for (m, &fs) in monitors_snapshot.iter().zip(fs_flags.iter()) {
+                            if center_x >= m.x as i64 && center_x < (m.x + m.width) as i64 && fs {
+                                on_fs = true;
+                            }
                         }
-                    }
+                        on_fs
+                    } else {
+                        false
+                    };
 
                     // Thread 2가 SetWindowPos에서 HWND_TOPMOST/NOTOPMOST를 판단할 수 있도록 공유
                     on_fs_writer.store(pet_on_fullscreen, Ordering::Relaxed);
@@ -870,6 +961,8 @@ pub fn run() {
             let teleport_reader = Arc::clone(&teleport_x_t2);
             let redraw_reader = Arc::clone(&needs_redraw_t2);
             let speed_factor_reader = Arc::clone(&pet_speed_factor_t2);
+            let move_mode_reader = Arc::clone(&move_mode_t2);
+            let pet_visual_w_reader = Arc::clone(&pet_visual_w_t2);
 
             // Win32 HWND 캐시 (Thread 2에서 SetWindowPos 직접 호출용)
             #[cfg(target_os = "windows")]
@@ -881,12 +974,32 @@ pub fn run() {
                 let mut prev_scale: f64 = 1.0; // 이전 프레임의 모니터 scale (프레임 간 유지하여 center_x 진동 방지)
                 let mut smooth_y: f64 = 0.0;   // Y 위치 보간용 (모니터 전환 시 높이 점프 방지)
                 let mut smooth_y_init = false;
-                // 윈도우 물리 높이 캐시 (DPI 변경 시에만 갱신, 매 프레임 IPC 호출 제거)
-                let mut cached_win_h: i32 = window_clone
-                    .outer_size()
+                // 윈도우 물리 크기 캐시 (DPI 변경 시에만 갱신, 매 프레임 IPC 호출 제거)
+                let outer = window_clone.outer_size();
+                let mut cached_win_h: i32 = outer.as_ref()
                     .map(|s| s.height as i32)
                     .unwrap_or((LOGICAL_WIN_H * prev_scale) as i32);
+                let mut cached_win_w: i32 = outer.as_ref()
+                    .map(|s| s.width as i32)
+                    .unwrap_or((LOGICAL_WIN_W * prev_scale) as i32);
                 let mut cached_scale_for_h: f64 = prev_scale;
+
+                // 등반 이동 상태 머신 변수
+                let mut move_phase: u8 = 0;       // 0=Bottom, 1=ClimbRight, 2=Top, 3=DescendLeft
+                let mut prev_move_phase: u8 = 0;  // phase 변경 이벤트 발행용
+                let mut current_y: f64 = 0.0;     // 등반/하강 시 Y 좌표 추적
+                let mut climb_edge_x: f64 = 0.0;  // 등반/하강 시 X 고정값
+                let mut climb_top_y: f64 = 0.0;   // 등반 구간 상단 Y
+                let mut climb_bottom_y: f64 = 0.0; // 등반 구간 하단 Y
+                let mut consecutive_climbs: u8 = 0; // 연속 등반 횟수 (3회 이상 방지)
+                let mut rng = rand::thread_rng();
+                let mut random_dir_left: bool = rng.gen_bool(0.5); // 랜덤 모드 방향
+                // 초기값을 반전시켜 첫 프레임에 방향 이벤트가 즉시 발행되도록 함
+                let mut prev_random_dir_left: bool = !random_dir_left;
+                let mut zorder_tick: u32 = 0; // Z-order 재적용 주기 카운터 (312프레임≈5초마다)
+                let mut prev_on_fs_t2: bool = false; // Thread 2 내 전체화면 상태 변경 감지
+                let mut prev_target_x: i32 = i32::MIN; // SetWindowPos 위치 변경 감지용
+                let mut prev_target_y: i32 = i32::MIN;
                 loop {
                     // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
                     if !is_running_t2.load(Ordering::Relaxed) {
@@ -904,6 +1017,8 @@ pub fn run() {
                         teleport_reader.store(i64::MIN, Ordering::Relaxed);
                         smooth_y_init = false; // Y 보간 초기화 (모니터 간 work_bottom 차이 대응)
                         needs_show = true;
+                        // 모니터 변경 시 등반 상태 리셋
+                        move_phase = 0;
                     }
 
                     // 공유 메모리에서 읽기만 수행 (매우 빠름, lock 없음)
@@ -934,87 +1049,463 @@ pub fn run() {
                     // 전체 모니터 목록 기준으로 이동 (전체화면 모니터는 topmost 해제로 뒤에 숨김)
                     if let Ok(monitors) = all_monitors_reader.read() {
                         if !monitors.is_empty() {
+                            // --- 공통: 모니터 범위 및 DPI 캐시 ---
                             let mut max_x = i32::MIN;
                             let mut min_x = i32::MAX;
                             let mut raw_target_y = 0i32;
                             let mut found_monitor = false;
-
-                            // 먼저 min/max 범위만 계산
                             for m in monitors.iter() {
-                                if m.x < min_x {
-                                    min_x = m.x;
-                                }
-                                if m.x + m.width > max_x {
-                                    max_x = m.x + m.width;
-                                }
+                                if m.x < min_x { min_x = m.x; }
+                                if m.x + m.width > max_x { max_x = m.x + m.width; }
                             }
-
-                            // 이전 프레임의 scale로 정확한 윈도우 중심 계산 (경계 진동 방지)
                             let center_x = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
-
-                            // DPI 전환 시에만 윈도우 높이 재조회 (매 프레임 IPC 호출 제거)
                             if prev_scale != cached_scale_for_h {
-                                cached_win_h = window_clone
-                                    .outer_size()
-                                    .map(|s| s.height as i32)
+                                let outer = window_clone.outer_size();
+                                cached_win_h = outer.as_ref().map(|s| s.height as i32)
                                     .unwrap_or((LOGICAL_WIN_H * prev_scale) as i32);
+                                cached_win_w = outer.as_ref().map(|s| s.width as i32)
+                                    .unwrap_or((LOGICAL_WIN_W * prev_scale) as i32);
                                 cached_scale_for_h = prev_scale;
                             }
                             let actual_win_h = cached_win_h;
-
+                            let actual_win_w = cached_win_w;
                             for m in monitors.iter() {
-                                let px = m.x;
-                                let pw = m.width;
-
-                                if center_x >= (px as f64) && center_x <= ((px + pw) as f64) {
+                                if center_x >= (m.x as f64) && center_x <= ((m.x + m.width) as f64) {
                                     prev_scale = m.scale_factor;
                                     raw_target_y = m.work_bottom - actual_win_h;
                                     found_monitor = true;
                                 }
                             }
+                            if min_x == i32::MAX { min_x = 0; max_x = 1920; }
 
-                            // Fallback bounds
-                            if min_x == i32::MAX {
-                                min_x = 0;
-                                max_x = 1920;
-                            }
-
-                            // 이동 속도 계산 (현재 모니터 scale + 펫별 속도 배율 반영)
+                            // --- 공통: 이동량 계산 ---
                             let pet_factor = f32::from_bits(speed_factor_reader.load(Ordering::Relaxed)) as f64;
                             let movement = 35.0 * prev_scale * speed_multiplier * pet_factor * delta_time;
-                            current_x += movement;
-                            // Thread 1의 전체화면 감지가 올바른 모니터를 알 수 있도록 공유
-                            pet_x_writer.store(current_x as i64, Ordering::Relaxed);
 
-                            // 🚨 [EDGE CASE] 모니터 핫플러깅 대응 (탈출 & 텔레포트)
-                            // 1) 뼈다귀가 오른쪽 끝(전체 max_x)을 넘었을 때 (정상적인 랩어라운드 또는 우측 모니터 뽑힘)
-                            // 2) 뼈다귀의 위치가 왼쪽 끝(전체 min_x)보다 작을 때 (좌측 모니터 뽑힘/미아 상태)
-                            if current_x > max_x as f64 || current_x < (min_x as f64 - 200.0) {
-                                current_x = min_x as f64 - 100.0;
-                                smooth_y_init = false;
-                                needs_show = true;
-                            }
+                            // --- 이동 모드별 분기 ---
+                            // mode 0=기본(오른쪽), 1=등반(오른쪽), 2=기본(왼쪽), 3=등반(왼쪽), 4=랜덤
+                            let mode = move_mode_reader.load(Ordering::Relaxed);
+                            let is_random = mode == 4;
+                            let is_climb = mode == 1 || mode == 3 || is_random;
+                            let is_left = if is_random { random_dir_left } else { mode >= 2 };
+                            let target_x: i32;
+                            let target_y: i32;
 
-                            // 모니터 미발견 시 (베젤 통과 중 등) 첫 번째 모니터 기준으로 보정
-                            if !found_monitor {
-                                if let Some(pm) = monitors.first() {
-                                    raw_target_y = pm.work_bottom - actual_win_h;
+                            if is_climb {
+                                // ========================================
+                                // 등반 이동 모드 (4-phase 상태 머신)
+                                // ========================================
+                                // 모니터를 X좌표로 정렬 (2-3개이므로 비용 무시)
+                                let mut sorted: Vec<&MonitorInfo> = monitors.iter().collect();
+                                sorted.sort_by_key(|m| m.x);
+
+                                // 펫 스프라이트 실제 폭 (프론트엔드 CSS 픽셀 → 물리 픽셀 변환)
+                                let pet_w = pet_visual_w_reader.load(Ordering::Relaxed) as f64 * prev_scale;
+                                // 윈도우 내 펫 좌우 여백 (펫은 윈도우 중앙에 배치)
+                                let margin = (actual_win_w as f64 - pet_w) / 2.0;
+
+                                match move_phase {
+                                    0 => {
+                                        // Bottom: 하단 이동 (오른쪽 모드→우측, 왼쪽 모드→좌측)
+                                        if is_left { current_x -= movement; } else { current_x += movement; }
+
+                                        // 현재 모니터 경계 도달 감지
+                                        let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
+                                        let cur_idx = sorted.iter().position(|m| {
+                                            center >= m.x as f64 && center <= (m.x + m.width) as f64
+                                        });
+
+                                        if let Some(idx) = cur_idx {
+                                            let mon = sorted[idx];
+                                            prev_scale = mon.scale_factor;
+                                            raw_target_y = mon.work_bottom - actual_win_h;
+
+                                            // 이동 방향에 따른 경계 도달 판정
+                                            let at_edge = if is_left {
+                                                // 왼쪽 모드: 펫 좌측 끝이 모니터 좌측에 도달
+                                                let pet_left = current_x + margin;
+                                                pet_left <= mon.x as f64
+                                            } else {
+                                                // 오른쪽 모드: 펫 우측 끝이 모니터 우측에 도달
+                                                let pet_right = current_x + margin + pet_w;
+                                                pet_right >= (mon.x + mon.width) as f64
+                                            };
+
+                                            if at_edge {
+                                                // 인접 모니터 존재 여부 (이동 방향 기준)
+                                                let has_neighbor = if is_left { idx > 0 } else { idx + 1 < sorted.len() };
+                                                let should_climb = if !has_neighbor {
+                                                    true // 끝 모니터 → 무조건 등반
+                                                } else if !is_random && consecutive_climbs >= 2 {
+                                                    false // 연속 2회 등반 → 강제 건너가기 (랜덤 모드 제외)
+                                                } else {
+                                                    rng.gen_bool(0.5)
+                                                };
+
+                                                if should_climb {
+                                                    // 이동 방향 쪽 벽에서 등반 시작
+                                                    move_phase = 1;
+                                                    climb_top_y = mon.y as f64 - (actual_win_h as f64 - pet_w) / 2.0;
+                                                    climb_bottom_y = mon.work_bottom as f64 - (actual_win_h as f64 + pet_w) / 2.0;
+                                                    if is_left {
+                                                        // 왼쪽 벽 등반
+                                                        climb_edge_x = mon.x as f64 - (actual_win_w - actual_win_h) as f64 / 2.0;
+                                                    } else {
+                                                        // 오른쪽 벽 등반
+                                                        climb_edge_x = (mon.x + mon.width) as f64 - (actual_win_w + actual_win_h) as f64 / 2.0;
+                                                    }
+                                                    current_x = climb_edge_x;
+                                                    current_y = climb_bottom_y;
+                                                    consecutive_climbs += 1;
+                                                } else {
+                                                    // 인접 모니터 하단으로 건너가기
+                                                    let neighbor = if is_left { sorted[idx - 1] } else { sorted[idx + 1] };
+                                                    if is_left {
+                                                        // 왼쪽: 이전 모니터 우측 끝에서 시작
+                                                        current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
+                                                    } else {
+                                                        // 오른쪽: 다음 모니터 좌측 끝에서 시작
+                                                        current_x = neighbor.x as f64 - margin;
+                                                    }
+                                                    prev_scale = neighbor.scale_factor;
+                                                    raw_target_y = neighbor.work_bottom - actual_win_h;
+                                                    consecutive_climbs = 0;
+                                                }
+                                            }
+                                        }
+
+                                        // 범위 이탈 보정 (핫플러그 대응)
+                                        if is_left {
+                                            // 왼쪽 이동: 좌측 끝 벗어나면 우측에서 재등장
+                                            if current_x < (min_x as f64 - actual_win_w as f64) || current_x > (max_x as f64 + actual_win_w as f64) {
+                                                current_x = max_x as f64;
+                                                smooth_y_init = false;
+                                                needs_show = true;
+                                            }
+                                        } else {
+                                            // 오른쪽 이동: 우측 끝 벗어나면 좌측에서 재등장
+                                            if current_x > max_x as f64 || current_x < (min_x as f64 - 200.0) {
+                                                current_x = min_x as f64 - 100.0;
+                                                smooth_y_init = false;
+                                                needs_show = true;
+                                            }
+                                        }
+
+                                        // Fallback Y
+                                        if !found_monitor {
+                                            if let Some(pm) = sorted.first() {
+                                                raw_target_y = pm.work_bottom - actual_win_h;
+                                            }
+                                        }
+
+                                        // Y 보간 (하단 이동 중에만)
+                                        if !smooth_y_init {
+                                            smooth_y = raw_target_y as f64;
+                                            smooth_y_init = true;
+                                        } else {
+                                            let diff = raw_target_y as f64 - smooth_y;
+                                            if diff.abs() < 1.0 { smooth_y = raw_target_y as f64; }
+                                            else { smooth_y += diff * 0.15; }
+                                        }
+
+                                        target_x = current_x as i32;
+                                        target_y = smooth_y as i32;
+                                    }
+                                    1 => {
+                                        // Climb(↑): 벽 테두리를 타고 위로 등반
+                                        current_y -= movement;
+                                        current_x = climb_edge_x;
+
+                                        if current_y <= climb_top_y {
+                                            current_y = climb_top_y;
+
+                                            // 랜덤 모드: 상단 도달 시 인접 모니터로 건너가기 가능
+                                            let mut crossed_at_top = false;
+                                            if is_random {
+                                                let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
+                                                let cur_idx = sorted.iter().position(|m| {
+                                                    center >= m.x as f64 && center <= (m.x + m.width) as f64
+                                                });
+                                                if let Some(idx) = cur_idx {
+                                                    // 등반한 벽 방향의 인접 모니터 확인
+                                                    let has_neighbor = if is_left { idx > 0 } else { idx + 1 < sorted.len() };
+                                                    if has_neighbor && rng.gen_bool(0.5) {
+                                                        // 인접 모니터로 건너가기
+                                                        let neighbor = if is_left { sorted[idx - 1] } else { sorted[idx + 1] };
+                                                        prev_scale = neighbor.scale_factor;
+                                                        // 건너간 모니터에서 상단 이동 또는 하강 랜덤 결정
+                                                        if rng.gen_bool(0.5) {
+                                                            // 상단 이동 (Phase 2)
+                                                            // 건너간 후 방향 반전: 진입 쪽에서 출발하여 반대쪽으로 이동
+                                                            random_dir_left = !is_left;
+                                                            // is_left=true → 좌측 이웃으로 건너감 → 우측 끝에서 출발 → 좌측으로 이동
+                                                            // is_left=false → 우측 이웃으로 건너감 → 좌측 끝에서 출발 → 우측으로 이동
+                                                            if is_left {
+                                                                current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
+                                                            } else {
+                                                                current_x = neighbor.x as f64 - margin;
+                                                            }
+                                                            current_y = neighbor.y as f64;
+                                                            move_phase = 2;
+                                                        } else {
+                                                            // 하강 (Phase 3) — 건너간 모니터의 등반 벽과 반대쪽 벽에서 하강
+                                                            climb_top_y = neighbor.y as f64 - (actual_win_h as f64 - pet_w) / 2.0;
+                                                            climb_bottom_y = neighbor.work_bottom as f64 - (actual_win_h as f64 + pet_w) / 2.0;
+                                                            if is_left {
+                                                                // 왼쪽 모드로 등반했으므로 건너간 모니터에서는 오른쪽 벽 하강
+                                                                climb_edge_x = (neighbor.x + neighbor.width) as f64 - (actual_win_w + actual_win_h) as f64 / 2.0;
+                                                            } else {
+                                                                // 오른쪽 모드로 등반했으므로 건너간 모니터에서는 왼쪽 벽 하강
+                                                                climb_edge_x = neighbor.x as f64 - (actual_win_w - actual_win_h) as f64 / 2.0;
+                                                            }
+                                                            current_x = climb_edge_x;
+                                                            current_y = climb_top_y;
+                                                            move_phase = 3;
+                                                        }
+                                                        crossed_at_top = true;
+                                                    }
+                                                }
+                                            }
+                                            if !crossed_at_top {
+                                                move_phase = 2; // → Top (현재 모니터에서 계속)
+                                            }
+                                        }
+
+                                        target_x = current_x as i32;
+                                        target_y = current_y as i32;
+                                    }
+                                    2 => {
+                                        // Top: 상단 이동 (오른쪽 모드→좌측, 왼쪽 모드→우측)
+                                        if is_left { current_x += movement; } else { current_x -= movement; }
+
+                                        // 현재 모니터 찾기 (상단 Y 결정용)
+                                        let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
+                                        let cur_idx = sorted.iter().position(|m| {
+                                            center >= m.x as f64 && center <= (m.x + m.width) as f64
+                                        });
+
+                                        if let Some(idx) = cur_idx {
+                                            let mon = sorted[idx];
+                                            prev_scale = mon.scale_factor;
+                                            current_y = mon.y as f64;
+
+                                            // 이동 방향에 따른 경계 도달 판정
+                                            let at_edge = if is_left {
+                                                // 왼쪽 모드(Phase 2에서는 우측 이동): 펫 우측 끝이 모니터 우측에 도달
+                                                let pet_right = current_x + margin + pet_w;
+                                                pet_right >= (mon.x + mon.width) as f64
+                                            } else {
+                                                // 오른쪽 모드(Phase 2에서는 좌측 이동): 펫 좌측 끝이 모니터 좌측에 도달
+                                                let pet_left = current_x + margin;
+                                                pet_left <= mon.x as f64
+                                            };
+
+                                            if at_edge {
+                                                // 인접 모니터 존재 여부 (Phase 2 이동 방향 기준)
+                                                let has_neighbor = if is_left { idx + 1 < sorted.len() } else { idx > 0 };
+                                                // 랜덤 모드: 인접 모니터 있어도 50% 확률로 하강 선택
+                                                let should_cross = has_neighbor && (!is_random || rng.gen_bool(0.5));
+                                                if should_cross {
+                                                    // 인접 모니터 상단으로 이동
+                                                    let neighbor = if is_left { sorted[idx + 1] } else { sorted[idx - 1] };
+                                                    if is_left {
+                                                        current_x = neighbor.x as f64 - margin;
+                                                    } else {
+                                                        current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
+                                                    }
+                                                    current_y = neighbor.y as f64;
+                                                    prev_scale = neighbor.scale_factor;
+                                                } else {
+                                                    // 끝 모니터 또는 랜덤 하강 → 하강 시작 (등반 반대쪽 벽)
+                                                    move_phase = 3;
+                                                    climb_top_y = mon.y as f64 - (actual_win_h as f64 - pet_w) / 2.0;
+                                                    climb_bottom_y = mon.work_bottom as f64 - (actual_win_h as f64 + pet_w) / 2.0;
+                                                    if is_left {
+                                                        // 왼쪽 모드: 오른쪽 벽에서 하강
+                                                        climb_edge_x = (mon.x + mon.width) as f64 - (actual_win_w + actual_win_h) as f64 / 2.0;
+                                                    } else {
+                                                        // 오른쪽 모드: 왼쪽 벽에서 하강
+                                                        climb_edge_x = mon.x as f64 - (actual_win_w - actual_win_h) as f64 / 2.0;
+                                                    }
+                                                    current_x = climb_edge_x;
+                                                    current_y = climb_top_y;
+                                                }
+                                            }
+                                        } else {
+                                            // 모니터 못 찾음 → fallback 하강
+                                            let fallback_mon = if is_left { sorted.last() } else { sorted.first() };
+                                            if let Some(fb) = fallback_mon {
+                                                move_phase = 3;
+                                                climb_top_y = fb.y as f64 - (actual_win_h as f64 - pet_w) / 2.0;
+                                                climb_bottom_y = fb.work_bottom as f64 - (actual_win_h as f64 + pet_w) / 2.0;
+                                                if is_left {
+                                                    climb_edge_x = (fb.x + fb.width) as f64 - (actual_win_w + actual_win_h) as f64 / 2.0;
+                                                } else {
+                                                    climb_edge_x = fb.x as f64 - (actual_win_w - actual_win_h) as f64 / 2.0;
+                                                }
+                                                current_x = climb_edge_x;
+                                                current_y = climb_top_y;
+                                                prev_scale = fb.scale_factor;
+                                            }
+                                        }
+
+                                        target_x = current_x as i32;
+                                        target_y = current_y as i32;
+                                    }
+                                    3 => {
+                                        // Descend(↓): 벽 테두리를 타고 아래로 하강
+                                        current_y += movement;
+                                        current_x = climb_edge_x;
+
+                                        if current_y >= climb_bottom_y {
+                                            current_y = climb_bottom_y;
+
+                                            if is_random {
+                                                // 랜덤 모드: 하강 완료 시 인접 모니터 건너가기 가능
+                                                let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
+                                                let cur_idx = sorted.iter().position(|m| {
+                                                    center >= m.x as f64 && center <= (m.x + m.width) as f64
+                                                });
+                                                let mut crossed_at_bottom = false;
+                                                if let Some(idx) = cur_idx {
+                                                    // 하강한 벽 방향의 인접 모니터 확인 (하강 벽은 등반 반대쪽)
+                                                    let has_neighbor = if is_left { idx + 1 < sorted.len() } else { idx > 0 };
+                                                    if has_neighbor && rng.gen_bool(0.5) {
+                                                        // 인접 모니터로 건너가기
+                                                        let neighbor = if is_left { sorted[idx + 1] } else { sorted[idx - 1] };
+                                                        prev_scale = neighbor.scale_factor;
+                                                        // 건너간 모니터에서 하단 이동 또는 등반 랜덤 결정
+                                                        if rng.gen_bool(0.5) {
+                                                            // 하단 이동 (Phase 0)
+                                                            // 진입한 경계에서 멀어지는 방향으로 이동
+                                                            // is_left=true → 우측 이웃으로 건너감 → 좌측 끝에서 출발 → 우측으로 이동
+                                                            // is_left=false → 좌측 이웃으로 건너감 → 우측 끝에서 출발 → 좌측으로 이동
+                                                            if is_left {
+                                                                current_x = neighbor.x as f64 - margin;
+                                                            } else {
+                                                                current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
+                                                            }
+                                                            smooth_y = (neighbor.work_bottom - actual_win_h) as f64;
+                                                            smooth_y_init = true;
+                                                            move_phase = 0;
+                                                            random_dir_left = !is_left; // 진입 반대 방향으로 이동
+                                                        } else {
+                                                            // 등반 (Phase 1) — 건너간 모니터의 하강 벽과 반대쪽 벽에서 등반
+                                                            climb_top_y = neighbor.y as f64 - (actual_win_h as f64 - pet_w) / 2.0;
+                                                            climb_bottom_y = neighbor.work_bottom as f64 - (actual_win_h as f64 + pet_w) / 2.0;
+                                                            if is_left {
+                                                                // 왼쪽 모드에서 오른쪽 벽 하강 → 건너간 모니터의 왼쪽 벽 등반
+                                                                climb_edge_x = neighbor.x as f64 - (actual_win_w - actual_win_h) as f64 / 2.0;
+                                                            } else {
+                                                                // 오른쪽 모드에서 왼쪽 벽 하강 → 건너간 모니터의 오른쪽 벽 등반
+                                                                climb_edge_x = (neighbor.x + neighbor.width) as f64 - (actual_win_w + actual_win_h) as f64 / 2.0;
+                                                            }
+                                                            current_x = climb_edge_x;
+                                                            current_y = climb_bottom_y;
+                                                            move_phase = 1;
+                                                        }
+                                                        crossed_at_bottom = true;
+                                                    }
+                                                }
+                                                if !crossed_at_bottom {
+                                                    // 건너가지 않음 → Phase 0 복귀
+                                                    // 하강한 벽에서 멀어지는 방향으로 이동
+                                                    // (is_left 방향 = Phase 0 원래 방향 = 하강 벽 반대쪽)
+                                                    move_phase = 0;
+                                                    smooth_y = climb_bottom_y - (actual_win_h as f64 - pet_w) / 2.0;
+                                                    smooth_y_init = true;
+                                                    random_dir_left = is_left;
+                                                }
+                                            } else {
+                                                // Phase 0 복귀
+                                                move_phase = 0;
+                                                smooth_y = climb_bottom_y - (actual_win_h as f64 - pet_w) / 2.0;
+                                                smooth_y_init = true;
+                                            }
+                                        }
+
+                                        target_x = current_x as i32;
+                                        target_y = current_y as i32;
+                                    }
+                                    _ => {
+                                        move_phase = 0;
+                                        target_x = current_x as i32;
+                                        target_y = smooth_y as i32;
+                                    }
                                 }
-                            }
 
-                            // Y 위치 보간: 모니터 간 work_bottom 차이로 인한 높이 점프 방지
-                            if !smooth_y_init {
-                                smooth_y = raw_target_y as f64;
-                                smooth_y_init = true;
+                                // 랜덤 모드: 방향 변경 이벤트를 phase 변경보다 먼저 발행
+                                // (phase 변경 시 continue로 건너뛰므로 방향 이벤트가 누락되지 않도록)
+                                // 비랜덤→랜덤 모드 전환 시에도 현재 방향을 즉시 전달
+                                if is_random && random_dir_left != prev_random_dir_left {
+                                    let _ = window_clone.emit("move-direction", random_dir_left);
+                                    prev_random_dir_left = random_dir_left;
+                                } else if !is_random {
+                                    // 비랜덤 모드에서는 prev를 반전시켜서 다시 랜덤 모드로 전환 시 즉시 발행되도록 준비
+                                    prev_random_dir_left = !random_dir_left;
+                                }
+
+                                // phase 변경 이벤트 발행 (변경 시에만, 매 프레임 아님)
+                                if move_phase != prev_move_phase {
+                                    let _ = window_clone.emit("move-phase", move_phase);
+                                    prev_move_phase = move_phase;
+                                    // 전환 프레임: 프론트엔드 CSS 회전 적용 전까지
+                                    // SetWindowPos 호출을 건너뛰어 시각적 깜빡임 방지
+                                    continue;
+                                }
                             } else {
-                                let diff = raw_target_y as f64 - smooth_y;
-                                if diff.abs() < 1.0 {
-                                    smooth_y = raw_target_y as f64;
+                                // ========================================
+                                // 기본 이동 모드 (방향에 따라 좌/우 이동)
+                                // ========================================
+                                if is_left { current_x -= movement; } else { current_x += movement; }
+
+                                // 범위 이탈 보정 (핫플러그 대응)
+                                if is_left {
+                                    // 왼쪽 이동: 좌측 끝 벗어나면 우측에서 재등장
+                                    if current_x < (min_x as f64 - actual_win_w as f64) || current_x > (max_x as f64 + actual_win_w as f64) {
+                                        current_x = max_x as f64;
+                                        smooth_y_init = false;
+                                        needs_show = true;
+                                    }
                                 } else {
-                                    smooth_y += diff * 0.15;
+                                    // 오른쪽 이동: 우측 끝 벗어나면 좌측에서 재등장
+                                    if current_x > max_x as f64 || current_x < (min_x as f64 - 200.0) {
+                                        current_x = min_x as f64 - 100.0;
+                                        smooth_y_init = false;
+                                        needs_show = true;
+                                    }
+                                }
+
+                                // Fallback Y
+                                if !found_monitor {
+                                    if let Some(pm) = monitors.first() {
+                                        raw_target_y = pm.work_bottom - actual_win_h;
+                                    }
+                                }
+
+                                // Y 위치 보간
+                                if !smooth_y_init {
+                                    smooth_y = raw_target_y as f64;
+                                    smooth_y_init = true;
+                                } else {
+                                    let diff = raw_target_y as f64 - smooth_y;
+                                    if diff.abs() < 1.0 { smooth_y = raw_target_y as f64; }
+                                    else { smooth_y += diff * 0.15; }
+                                }
+
+                                target_x = current_x as i32;
+                                target_y = smooth_y as i32;
+
+                                // 등반→기본 전환 시 phase 리셋 이벤트
+                                if prev_move_phase != 0 {
+                                    move_phase = 0;
+                                    let _ = window_clone.emit("move-phase", 0u8);
+                                    prev_move_phase = 0;
                                 }
                             }
-                            let target_y = smooth_y as i32;
+
+                            // Thread 1의 전체화면 감지용 X좌표 공유
+                            pet_x_writer.store(current_x as i64, Ordering::Relaxed);
 
                             // Win32 SetWindowPos로 위치 이동과 TOPMOST를 동시에 적용
                             // → 모니터 간 이동 시 다른 창 뒤로 숨는 문제 방지
@@ -1047,8 +1538,10 @@ pub fn run() {
                                 const HWND_TOPMOST: isize = -1;
                                 const HWND_NOTOPMOST: isize = -2;
                                 const SWP_NOSIZE: u32 = 0x0001;
+                                const SWP_NOZORDER: u32 = 0x0004;
                                 const SWP_NOACTIVATE: u32 = 0x0010;
                                 const SWP_FRAMECHANGED: u32 = 0x0020;
+                                const SWP_NOSENDCHANGING: u32 = 0x0400; // WM_WINDOWPOSCHANGING 메시지 생략
                                 const SW_SHOWNA: i32 = 8; // 활성화 없이 표시
                                 // RedrawWindow 플래그
                                 const RDW_INVALIDATE: u32 = 0x0001;
@@ -1057,11 +1550,25 @@ pub fn run() {
                                 const RDW_UPDATENOW: u32 = 0x0100;
                                 const RDW_FRAME: u32 = 0x0400;
 
-                                let insert_after = if on_fs_reader.load(Ordering::Relaxed) {
+                                let on_fs = on_fs_reader.load(Ordering::Relaxed);
+                                let insert_after = if on_fs {
                                     HWND_NOTOPMOST
                                 } else {
                                     HWND_TOPMOST
                                 };
+
+                                // Z-order 재적용 판단: 전체화면 전환 시 즉시, 그 외 ~500ms(30프레임)마다
+                                let fs_changed = on_fs != prev_on_fs_t2;
+                                prev_on_fs_t2 = on_fs;
+                                zorder_tick += 1;
+                                let apply_zorder = fs_changed || do_redraw || needs_show || zorder_tick >= 312;
+                                if apply_zorder {
+                                    zorder_tick = 0;
+                                }
+
+                                // 위치 변경 감지: 좌표가 이전과 같으면 SetWindowPos 생략 (DWM 부하 제거)
+                                // 단, Z-order 재적용/redraw/show가 필요한 프레임은 항상 호출
+                                let pos_changed = target_x != prev_target_x || target_y != prev_target_y;
 
                                 if cached_hwnd != 0 {
                                     unsafe {
@@ -1071,9 +1578,9 @@ pub fn run() {
                                             SetWindowPos(
                                                 cached_hwnd,
                                                 insert_after,
-                                                current_x as i32,
+                                                target_x,
                                                 target_y,
-                                                actual_win_h, // 물리 높이를 cx에 전달하지 않고 아래에서 재계산
+                                                actual_win_h,
                                                 0,
                                                 SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                                             );
@@ -1086,17 +1593,32 @@ pub fn run() {
                                             );
                                             // 높이 캐시 무효화 (DPI 변경 대응)
                                             cached_scale_for_h = -1.0;
-                                        } else {
+                                        } else if apply_zorder {
+                                            // Z-order 재적용 프레임: TOPMOST/NOTOPMOST + 위치 이동
                                             SetWindowPos(
                                                 cached_hwnd,
                                                 insert_after,
-                                                current_x as i32,
+                                                target_x,
                                                 target_y,
                                                 0,
                                                 0,
-                                                SWP_NOSIZE | SWP_NOACTIVATE,
+                                                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+                                            );
+                                        } else if pos_changed {
+                                            // 일반 프레임: 위치만 이동, Z-order·WM_WINDOWPOSCHANGING 생략
+                                            SetWindowPos(
+                                                cached_hwnd,
+                                                insert_after,
+                                                target_x,
+                                                target_y,
+                                                0,
+                                                0,
+                                                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
                                             );
                                         }
+                                        // 위치 캐시 갱신
+                                        prev_target_x = target_x;
+                                        prev_target_y = target_y;
                                         // 모니터 제거 시 OS가 윈도우를 숨길 수 있음
                                         // → 유효 좌표 이동 직후 동기적으로 강제 표시
                                         if needs_show || do_redraw {
@@ -1108,7 +1630,7 @@ pub fn run() {
                             #[cfg(not(target_os = "windows"))]
                             {
                                 let _ = window_clone.set_position(tauri::Position::Physical(
-                                    tauri::PhysicalPosition::new(current_x as i32, target_y),
+                                    tauri::PhysicalPosition::new(target_x, target_y),
                                 ));
                             }
                         }
@@ -1130,9 +1652,13 @@ pub fn run() {
             set_polling_interval,
             update_mouse_enabled,
             update_bubble_enabled,
+            update_bubble_side,
+            update_bubble_top,
             update_bubble_height,
             update_alarm_list,
             update_display_config,
+            update_move_mode,
+            update_pet_visual_w,
             update_messages,
             update_msg_rotate,
             update_app_settings,

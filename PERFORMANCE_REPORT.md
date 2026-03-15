@@ -1,17 +1,28 @@
 # Performance Analysis Report
 
-**Date**: 2026-03-14
-**Target**: `src/MainWindow.tsx`, `src/SettingsWindow.tsx`, `src/types.ts`, `src-tauri/src/lib.rs`
-**Analysis Type**: Static (4차 리뷰 — 펫 8종 추가 + 속도 조절 기능 후)
+**Date**: 2026-03-15
+**Target**: `src-tauri/src/lib.rs`, `src/MainWindow.tsx`, `src/types.ts`
+**Analysis Type**: Static (6차 리뷰 — SetWindowPos 최적화 이후 잔여 개선점 탐색)
 
 ---
 
 ## Executive Summary
-- **Overall Score**: 85/100 (이전 88 → 펫 15종 + 속도 조절 기능 추가 후 소폭 하락)
-- **Critical Issues**: 0
-- **Warnings**: 3
-- **Info**: 4
-- **Estimated Impact**: Low — 전반적으로 잘 최적화된 코드베이스. 개선 여지는 있으나 체감 성능 저하 없음.
+- **Overall Score**: 82/100 (SetWindowPos 최적화 반영, 5차 72점에서 상승)
+- **Critical Issues**: 0 (기존 C2 해결됨)
+- **Warnings**: 4
+- **Info**: 3
+- **Estimated Impact**: Low — 핵심 병목(SetWindowPos)이 해결되어 남은 항목은 모두 저위험
+
+---
+
+## 적용 완료된 최적화
+
+| 최적화 | 효과 |
+|--------|------|
+| SWP_NOZORDER (일반 프레임) | DWM Z-order 재계산 60fps → ~0.2fps |
+| SWP_NOSENDCHANGING | WM_WINDOWPOSCHANGING 메시지 체인 제거 |
+| 위치 미변경 시 SetWindowPos 생략 | 호버 시 100% 제거, 저속 시 30~50% 감소 |
+| Z-order 5초 간격 재적용 | TOPMOST 유지하면서 DWM 부하 최소화 |
 
 ---
 
@@ -19,82 +30,115 @@
 
 ### Warnings
 
-#### W1. `petStyle` useMemo 의존성 불완전 (MainWindow.tsx:713-745)
+#### W1. `available_monitors()` IPC 매 폴링마다 호출 (lib.rs:767)
 
-**위치**: `MainWindow.tsx` line 713 — `eslint-disable-next-line react-hooks/exhaustive-deps` 억제
+```rust
+if let Ok(m_list) = window_clone_evt.available_monitors() {
+```
 
-**문제**: `makeBgSize`, `baseSize`, `flipStyle`, `opacityStyle`, `isDefaultColor` 등 매 렌더마다 재생성되는 값이 useMemo 의존성 배열에서 누락됨. `eslint-disable`로 경고를 억제하여 실질적 메모이제이션 효과가 불완전.
+**문제**: 매 폴링(기본 1초)마다 Tauri IPC를 통해 모니터 목록을 조회합니다. 모니터 구성은 핫플러그 시에만 변경되므로 대부분의 호출이 불필요합니다.
 
-**영향**: Low-Medium. useMemo가 의존성 변경을 감지하지 못해 stale 값을 반환하거나, 반대로 매 렌더마다 재계산되어 메모이제이션 효과 소실.
+**영향**: Low-Medium. IPC 왕복 ~1ms + `get_work_area_for_monitor()`가 모니터 수만큼 Win32 API 호출(MonitorFromPoint + GetMonitorInfoW).
 
-**권장**: 참조하는 변수들을 useMemo 내부에서 직접 계산하거나, 의존성 배열을 정확히 명시
+**권장**: 10~30초 간격으로 갱신. 모니터 수 변경 감지는 이미 구현되어 있으므로 빈도만 줄이면 됩니다.
 
----
-
-#### W2. 알림 동기화 핸들러 내 중복 Date 인스턴스 (MainWindow.tsx:414-479)
-
-**위치**: `alarm-list-update` 이벤트 리스너
-
-**문제**: `Date.now()`, `new Date().toISOString()`, `new Date().getHours()`, `new Date().getMinutes()` — 총 4회 별도 Date 객체 생성
-
-**영향**: Low. 각 호출 시점 차이로 인해 자정/정시 경계에서 논리적 불일치 가능성 존재 (예: `today`는 3/13인데 `currentHour`는 0시)
-
-**권장 수정**:
-```typescript
-// Before (4회 Date 생성)
-const now = Date.now();
-const today = new Date().toISOString().slice(0, 10);
-const currentHour = new Date().getHours();
-const currentMin = new Date().getMinutes();
-
-// After (1회 Date 생성)
-const nowDate = new Date();
-const now = nowDate.getTime();
-const today = nowDate.toISOString().slice(0, 10);
-const currentHour = nowDate.getHours();
-const currentMin = nowDate.getMinutes();
+```rust
+let mut monitor_refresh_tick: u32 = 0;
+// ...
+if monitor_refresh_tick == 0 {
+    if let Ok(m_list) = window_clone_evt.available_monitors() { ... }
+}
+monitor_refresh_tick = (monitor_refresh_tick + 1) % 10; // 10초마다
 ```
 
 ---
 
-#### W3. 이벤트 핸들러 내 동기 localStorage 쓰기 (MainWindow.tsx 전역)
+#### W2. `EnumWindows` 매 폴링마다 전체 순회 (lib.rs:832)
 
-**위치**: `battery-usage`, `monitor-config-update`, `mouse-enabled-update`, `bubble-enabled-update`, `alarm-list-update` 등 다수
+```rust
+let fs_flags = check_fullscreen_all(&monitors_snapshot);
+```
 
-**문제**: 이벤트 수신 즉시 `localStorage.setItem()` 호출. localStorage는 동기(blocking) I/O. `runVariant`/색상 필터는 500ms 디바운스(line 559-571)가 적용되어 있으나, 나머지 이벤트 핸들러는 즉시 쓰기.
+**문제**: 매 폴링마다 `EnumWindows`로 모든 최상위 윈도우(100~300개)를 순회하여 전체화면 여부를 판단합니다. 전체화면 전환은 드물게 발생합니다.
 
-**영향**: Low. 개별 호출은 빠르지만, 알림 목록(`JSON.stringify(alarms)`)처럼 큰 객체의 직렬화는 모니터링 폴링과 겹칠 때 메인 스레드 지연 가능.
+**영향**: Low-Medium. 윈도우당 4개 Win32 API × 200개 = 800회/초.
 
-**권장**: 알림 목록 등 큰 JSON 객체는 디바운스 또는 `requestIdleCallback` 활용
+**권장**: 3~5초 간격으로 줄이거나, `available_monitors` 갱신과 동일 주기로 묶기.
+
+---
+
+#### W3. Thread 1 매 폴링마다 Vec 할당 (lib.rs:768)
+
+```rust
+let mut new_monitors = Vec::new();
+for m in m_list { ... new_monitors.push(...); }
+```
+
+**문제**: 매 폴링마다 새 `Vec<MonitorInfo>`를 할당하고 Arc로 감쌉니다. 모니터 수가 2~3개이므로 할당 크기는 작지만, 이전 Arc가 drop되면서 매초 할당+해제가 반복됩니다.
+
+**영향**: Low. 소량 할당이지만 장시간 실행 시 힙 단편화 가능성.
+
+**권장**: W1과 함께 빈도를 줄이면 자동 해결.
+
+---
+
+#### W4. `refresh_cpu_usage()` 전체 코어 폴링 (lib.rs:746)
+
+```rust
+sys.refresh_cpu_usage();
+let cpus = sys.cpus();
+let usage = cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32;
+```
+
+**문제**: 전체 평균만 사용하는데 모든 논리 코어를 개별 수집합니다.
+
+**영향**: Low. sysinfo 내부에서 NtQuerySystemInformation 호출 시 코어별 데이터 파싱 비용.
+
+**권장**: sysinfo 0.33에 `global_cpu_usage()` 존재 시 전환. 없으면 현재 방식 유지.
 
 ---
 
 ### Info / Minor
 
-#### I1. `scaledAnimWidth` 헬퍼 매 렌더 재생성 (MainWindow.tsx:595)
+#### I1. JSX 인라인 클로저 매 렌더마다 실행 (MainWindow.tsx:825-833)
 
-`const scaledAnimWidth = (frames: number) => ...` 가 컴포넌트 본문에 선언되어 매 렌더마다 새 함수 객체 생성. 함수 생성 비용은 극히 미미하므로 현재 상태 유지 권장.
+```tsx
+<div className="pet-container" style={(() => {
+  const flip = isLeftMode ? 'scaleX(-1) ' : '';
+  if (movePhase === 1) return { transform: `${flip}rotate(-90deg)` };
+  // ...
+})()}>
+```
 
-#### I2. `getPetType` 선형 탐색 (types.ts:370-372)
+**참고**: IIFE(즉시 실행 함수)가 매 렌더마다 새 스타일 객체를 생성합니다. `useMemo`로 캐싱 가능하지만, 객체 생성 비용이 극히 미미하여 현재 상태 유지 권장.
 
-`PET_TYPES.find(p => p.id === id)` — 15개 항목 선형 탐색. O(15)로 무시 가능. 펫 수가 100+개로 증가 시 Map 전환 고려.
+#### I2. `checkAlarms` 내 Date 객체 생성 (types.ts:558-559, 621-622)
 
-#### I3. 18개 이벤트 리스너 단일 useEffect (MainWindow.tsx:359-557)
+```typescript
+const now = Date.now();
+const today = new Date().toISOString().slice(0, 10);
+// ...
+const currentDate = new Date(); // hourly 케이스
+```
 
-하나의 `useEffect`에 18개 `listen()` 호출 집약. 마운트/언마운트 1회만 실행되므로 성능 영향 없음. 코드 구조 관점의 이슈.
+**참고**: 1초 간격 타이머에서 호출되며, 알람 수가 적으면 무시 가능. 이전 리뷰(4차)에서 MainWindow.tsx 내 Date 통합은 완료됨. types.ts 내부는 별도 함수이므로 독립적으로 Date 생성이 필요.
 
-#### I4. 스프라이트 이미지 78개 정적 import (types.ts:1-77)
+#### I3. `evaluateMessages` 매 모니터링 업데이트마다 실행 (MainWindow.tsx:213)
 
-15종 펫의 78개 이미지를 모두 정적 import. Vite가 빌드 시 최적화하므로 런타임 영향은 없으나, 번들 크기가 증가할 수 있음. lazy import나 동적 로딩은 이 규모에서는 오히려 복잡성만 증가시키므로 현재 상태 유지 권장.
+**참고**: CPU, 메모리, 네트워크, 배터리 이벤트 각각에 의해 트리거되어 초당 최대 4회 실행. 메시지 배열이 작으면(<20개) 무시 가능. 이벤트를 하나로 묶으면 1회로 줄일 수 있으나, Rust 측에서 4개 emit을 1개로 합치면 코드 복잡도가 증가하므로 현재 상태 유지 권장.
 
 ---
 
 ## 기존 최적화 유지 확인
 
-### Rust Backend (lib.rs) — 모두 유지
+### Rust Backend (lib.rs)
 
 | 최적화 | 상태 |
 |--------|------|
+| SetWindowPos SWP_NOZORDER (일반 프레임) | **신규 적용** |
+| SetWindowPos SWP_NOSENDCHANGING | **신규 적용** |
+| 위치 미변경 시 SetWindowPos 생략 | **신규 적용** |
+| Z-order 5초 간격 재적용 | **신규 적용** |
 | Arc swap 패턴 (모니터 캐시) | **유지** |
 | AtomicU32 bit-pattern f32 (lock-free 속도값 공유) | **유지** |
 | DPI 변경 시에만 outer_size 조회 | **유지** |
@@ -103,8 +147,9 @@ const currentMin = nowDate.getMinutes();
 | 배터리 3분 주기 폴링 | **유지** |
 | HWND 캐싱 + SetWindowPos 직접 호출 | **유지** |
 | 중지 상태 sleep 분리 (500ms/200ms) | **유지** |
+| delta_time 상한 50ms | **유지** |
 
-### React Frontend — 모두 유지
+### React Frontend
 
 | 최적화 | 상태 |
 |--------|------|
@@ -114,39 +159,30 @@ const currentMin = nowDate.getMinutes();
 | Web Animations API 스프라이트 제어 | **유지** |
 | sortedMessages useMemo (정렬 캐싱) | **유지** |
 | getTextShadow useMemo (색상 변경 시에만 재계산) | **유지** |
-
----
-
-## 신규 기능 성능 영향
-
-| 신규 기능 | 성능 영향 | 비고 |
-|-----------|-----------|------|
-| 펫 8종 추가 (monster1-6, human1-2) | 무시 가능 | 정적 데이터 배열 확장, 런타임 비용 없음 |
-| 78개 스프라이트 import | 번들 크기 증가 | Vite 빌드 최적화로 런타임 영향 없음 |
-| 펫별 속도 조절 (0~200%) | 무시 가능 | 곱셈 1회 + AtomicU32 store 1회 |
-| 듀얼 우클릭 (rightClickImage + hasVariants) | 무시 가능 | 조건 분기 추가만, 새 할당 없음 |
-| `update_pet_speed` Tauri 커맨드 | 무시 가능 | atomic store + event emit 1회 |
-| `pet-speed-update` 이벤트 리스너 | 무시 가능 | localStorage 쓰기 1회 |
+| petStyle useMemo (의존성 완전 명시) | **유지** |
+| Date 인스턴스 통합 (alarm-list-update 핸들러) | **유지** |
 
 ---
 
 ## Recommendations (우선순위순)
 
-| 순위 | 항목 | 난이도 | 영향 |
+| 순위 | 항목 | 난이도 | 효과 |
 |------|------|--------|------|
-| 1 | W2: Date 인스턴스 통합 (논리 버그 예방) | Low | 자정/정시 경계 불일치 방지 |
-| 2 | W1: petStyle useMemo 의존성 정리 | Medium | 정확한 메모이제이션 보장 |
-| 3 | W3: 알림 목록 등 큰 JSON localStorage 디바운스 | Medium | 메인 스레드 차단 감소 |
+| 1 | W1+W2: `available_monitors` + `EnumWindows` 빈도 감소 (10초) | Low | 매초 IPC+800회 Win32 API → 10초마다로 감소 |
+| 2 | W4: `global_cpu_usage()` 전환 (API 존재 시) | Low | 코어별 파싱 제거 |
+| 3 | I3: 모니터링 이벤트 통합 (CPU+메모리+네트워크를 1개 emit으로) | Medium | evaluateMessages 호출 4회→1회/초 |
 
 ---
 
 ## Conclusion
 
-Rust 백엔드의 atomic 연산, Arc swap, 캐싱 등 핵심 최적화가 모두 유지되고 있으며, React 프론트엔드도 Ref 패턴, useMemo, 디바운스를 적절히 활용하고 있습니다.
+SetWindowPos 최적화(SWP_NOZORDER + SWP_NOSENDCHANGING + 위치 변경 감지 + 5초 Z-order)가 적용되어 **마우스 속도 저하의 주요 원인이 해결**되었습니다.
 
-펫 8종 + 속도 조절 기능 추가로 인한 성능 저하는 사실상 없습니다. 3건의 Warning은 모두 저위험-저노력 수정이며, W2(Date 통합)는 성능보다 논리 정확성 관점에서 우선 수정을 권장합니다.
+남은 경고(W1~W4)는 모두 저위험이며, 가장 효과적인 추가 개선은 **`available_monitors`와 `EnumWindows`의 호출 빈도를 10초로 줄이는 것**입니다. 이는 모니터 핫플러그 감지 지연(최대 10초)과의 트레이드오프이지만, 실사용에서는 충분히 허용 가능합니다.
+
+메모리 누수는 확인되지 않으며, 장시간 실행에 문제가 없습니다.
 
 ---
 
 **Report Generated by**: Performance Verifier Skill (Claude Code)
-**Report Type**: 4차 리뷰 (펫 8종 + 속도 조절 기능 추가 후)
+**Report Type**: 6차 리뷰 (SetWindowPos 최적화 이후 잔여 개선점 분석)

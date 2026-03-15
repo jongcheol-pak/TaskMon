@@ -143,6 +143,21 @@ const ko = {
   'alarm.detail.minAfter': '{n}분 후',
   'alarm.detail.hourlyAt': '매시 {n}분',
 
+  // 펫 이동
+  'sidebar.movement': '펫 이동',
+  'movement.title': '이동 모드',
+  'movement.description': '펫의 이동 방식을 선택합니다.',
+  'movement.basicRight': '기본 이동 (오른쪽)',
+  'movement.basicRightDesc': '작업표시줄 위에서 오른쪽으로 이동합니다.',
+  'movement.basicLeft': '기본 이동 (왼쪽)',
+  'movement.basicLeftDesc': '작업표시줄 위에서 왼쪽으로 이동합니다.',
+  'movement.climbRight': '등반 이동 (오른쪽)',
+  'movement.climbRightDesc': '모니터 테두리를 따라 오른쪽 방향으로 순회합니다.',
+  'movement.climbLeft': '등반 이동 (왼쪽)',
+  'movement.climbLeftDesc': '모니터 테두리를 따라 왼쪽 방향으로 순회합니다.',
+  'movement.random': '아무 곳으로 이동',
+  'movement.randomDesc': '방향과 등반/건너가기를 랜덤으로 결정합니다.',
+
   // 일반 설정
   'general.title': '설정',
   'general.pollingLabel': '폴링 간격 (초)',
@@ -150,6 +165,8 @@ const ko = {
   'general.mouseEnabled': '마우스 사용',
   'general.mouseEnabledDesc': '펫에 마우스를 가가면 idle 상태로 변경되며 모니터링 상태 값이 표시 됩니다.',
   'general.bubbleLabel': '말풍선 사용',
+  'general.bubbleSide': '좌우 말풍선 표시',
+  'general.bubbleTop': '상단 말풍선 표시',
   'general.bubbleHeight': '말풍선 높이',
   'general.apply': '적용',
   'font.title': '폰트',
@@ -310,6 +327,21 @@ const en: Record<string, string> = {
   'alarm.detail.minAfter': 'After {n} min',
   'alarm.detail.hourlyAt': 'At {n} min/hr',
 
+  // 펫 이동
+  'sidebar.movement': 'Movement',
+  'movement.title': 'Movement Mode',
+  'movement.description': 'Select how the pet moves.',
+  'movement.basicRight': 'Basic (Right)',
+  'movement.basicRightDesc': 'Moves right along the taskbar.',
+  'movement.basicLeft': 'Basic (Left)',
+  'movement.basicLeftDesc': 'Moves left along the taskbar.',
+  'movement.climbRight': 'Climbing (Right)',
+  'movement.climbRightDesc': 'Traverses around the monitor edges clockwise.',
+  'movement.climbLeft': 'Climbing (Left)',
+  'movement.climbLeftDesc': 'Traverses around the monitor edges counter-clockwise.',
+  'movement.random': 'Random',
+  'movement.randomDesc': 'Randomly decides direction and climbing/crossing.',
+
   // 일반 설정
   'general.title': 'Settings',
   'general.pollingLabel': 'Polling Interval (sec)',
@@ -317,6 +349,8 @@ const en: Record<string, string> = {
   'general.mouseEnabled': 'Mouse Interaction',
   'general.mouseEnabledDesc': 'When hovering the pet, it switches to idle state and displays monitoring values.',
   'general.bubbleLabel': 'Speech Bubble',
+  'general.bubbleSide': 'Side Bubble',
+  'general.bubbleTop': 'Top Bubble',
   'general.bubbleHeight': 'Bubble Height',
   'general.apply': 'Apply',
   'font.title': 'Font',

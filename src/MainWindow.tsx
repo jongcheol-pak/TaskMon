@@ -107,6 +107,14 @@ export default function MainWindow() {
     const saved = localStorage.getItem('bubbleEnabled');
     return saved !== null ? saved === 'true' : true;
   });
+  const [bubbleSide, setBubbleSide] = useState<boolean>(() => {
+    const saved = localStorage.getItem('bubbleSide');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [bubbleTop, setBubbleTop] = useState<boolean>(() => {
+    const saved = localStorage.getItem('bubbleTop');
+    return saved !== null ? saved === 'true' : true;
+  });
   const [bubbleHeight, setBubbleHeight] = useState<number>(() => {
     const saved = localStorage.getItem('bubbleHeight');
     return saved ? Number(saved) : 0;
@@ -143,6 +151,16 @@ export default function MainWindow() {
     return localStorage.getItem('alarmFontColor') || '#FFFFFF';
   });
 
+  // 등반 이동 phase (0=Bottom, 1=ClimbRight, 2=Top, 3=DescendLeft)
+  const [movePhase, setMovePhase] = useState(0);
+  // 이동 모드 (0=기본 오른쪽, 1=등반 오른쪽, 2=기본 왼쪽, 3=등반 왼쪽, 4=랜덤)
+  const [moveMode, setMoveMode] = useState<number>(() => {
+    const saved = localStorage.getItem('moveMode');
+    return saved !== null ? Number(saved) : 0;
+  });
+  // 랜덤 모드 동적 방향 (Rust에서 move-direction 이벤트로 업데이트)
+  const [randomDirLeft, setRandomDirLeft] = useState(false);
+
   const skeletonRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<Animation | null>(null);
   const hurtTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -170,6 +188,11 @@ export default function MainWindow() {
     const savedSpeed = localStorage.getItem(`petSpeed_${petId}`);
     const userSpeed = savedSpeed ? Number(savedSpeed) / 100 : 1.0;
     invoke("update_pet_type", { petId: pet.id, speedFactor: pet.speedFactor, userSpeed });
+    // 저장된 이동 모드를 Rust에 적용
+    const savedMode = localStorage.getItem('moveMode');
+    if (savedMode !== null) {
+      invoke("update_move_mode", { mode: Number(savedMode) });
+    }
   }, []);
 
   // 메시지 목록은 변경 시에만 정렬 (매 모니터링 값 변경 시 재정렬 방지)
@@ -407,6 +430,14 @@ export default function MainWindow() {
     const unlistenBubble = listen<boolean>("bubble-enabled-update", (event) => {
       setBubbleEnabled(event.payload);
     });
+    const unlistenBubbleSide = listen<boolean>("bubble-side-update", (event) => {
+      setBubbleSide(event.payload);
+      localStorage.setItem('bubbleSide', String(event.payload));
+    });
+    const unlistenBubbleTop = listen<boolean>("bubble-top-update", (event) => {
+      setBubbleTop(event.payload);
+      localStorage.setItem('bubbleTop', String(event.payload));
+    });
     const unlistenBubbleHeight = listen<number>("bubble-height-update", (event) => {
       setBubbleHeight(event.payload);
       localStorage.setItem('bubbleHeight', String(event.payload));
@@ -544,6 +575,19 @@ export default function MainWindow() {
       localStorage.setItem(`petSpeed_${event.payload.petId}`, String(Math.round(event.payload.userSpeed * 100)));
       setPetUserSpeed(Math.round(event.payload.userSpeed * 100));
     });
+    // 등반 이동 phase 변경 수신
+    const unlistenMovePhase = listen<number>("move-phase", (event) => {
+      setMovePhase(event.payload);
+    });
+    // 이동 모드 변경 수신
+    const unlistenMoveMode = listen<number>("move-mode-update", (event) => {
+      setMoveMode(event.payload);
+      localStorage.setItem('moveMode', String(event.payload));
+    });
+    // 랜덤 모드 방향 변경 수신
+    const unlistenMoveDir = listen<boolean>("move-direction", (event) => {
+      setRandomDirLeft(event.payload);
+    });
 
     return () => {
       unlisten.then((f) => f());
@@ -555,6 +599,8 @@ export default function MainWindow() {
       unlistenMonitorConfig.then((f) => f());
       unlistenMouse.then((f) => f());
       unlistenBubble.then((f) => f());
+      unlistenBubbleSide.then((f) => f());
+      unlistenBubbleTop.then((f) => f());
       unlistenBubbleHeight.then((f) => f());
       unlistenAlarms.then((f) => f());
       unlistenDisplayConfig.then((f) => f());
@@ -564,6 +610,9 @@ export default function MainWindow() {
       unlistenPetType.then((f) => f());
       unlistenPetScale.then((f) => f());
       unlistenPetSpeed.then((f) => f());
+      unlistenMovePhase.then((f) => f());
+      unlistenMoveMode.then((f) => f());
+      unlistenMoveDir.then((f) => f());
     };
   }, []);
 
@@ -577,10 +626,12 @@ export default function MainWindow() {
       localStorage.setItem('petOpacity', String(petOpacity));
       localStorage.setItem('monitorConfig', JSON.stringify(monitorConfig));
       localStorage.setItem('bubbleEnabled', String(bubbleEnabled));
+      localStorage.setItem('bubbleSide', String(bubbleSide));
+      localStorage.setItem('bubbleTop', String(bubbleTop));
       localStorage.setItem('alarms', JSON.stringify(alarms));
     }, 500);
     return () => clearTimeout(timer);
-  }, [runVariant, hue, saturation, brightness, petOpacity, monitorConfig, bubbleEnabled, alarms]);
+  }, [runVariant, hue, saturation, brightness, petOpacity, monitorConfig, bubbleEnabled, bubbleSide, bubbleTop, alarms]);
 
   // 타이머 정리
   useEffect(() => {
@@ -706,6 +757,11 @@ export default function MainWindow() {
   const scaledH = Math.round(frameHeight * finalScale);
   const scaledMargin = bottomPadding > 0 ? `-${Math.round(bottomPadding * finalScale)}px` : undefined;
 
+  // 펫 스프라이트 실제 폭을 Rust 백엔드에 공유 (경계 판정용)
+  useEffect(() => {
+    invoke("update_pet_visual_w", { width: scaledW });
+  }, [scaledW]);
+
   // 말풍선 위치: 캐릭터 머리 위 (bubbleHeight로 추가 높이 조절)
   const bubbleBottom = scaledH - (bottomPadding > 0 ? Math.round(bottomPadding * finalScale) : 0) + bubbleHeight;
 
@@ -753,20 +809,42 @@ export default function MainWindow() {
     return { ...base, filter };
   }, [currentPet, isHurt, isHovered, isRightClickAnim, safeVariant, currentRunFrames, currentIdleFrames, frameWidth, finalScale, scaledH, scaledW, scaledMargin, petOpacity, hue, saturation, brightness]);
 
+  // Phase별 말풍선 표시 허용 여부 (Phase 1,3=좌우, Phase 2=상단, Phase 0=항상)
+  const phaseBubbleAllowed = movePhase === 0 || (movePhase === 2 ? bubbleTop : bubbleSide);
+
   // 말풍선 표시 여부 판정 (이동 중, not hovered, not hurt)
-  const showNotification = bubbleEnabled && displayConfig.showNotificationText && activeNotifications.length > 0;
+  const showNotification = bubbleEnabled && phaseBubbleAllowed && displayConfig.showNotificationText && activeNotifications.length > 0;
   // 알림 우선 모드: 알림 표시 중에는 모니터링 문구 숨김
-  const showMonitoring = bubbleEnabled && displayConfig.showMonitoringText && petMessage
+  const showMonitoring = bubbleEnabled && phaseBubbleAllowed && displayConfig.showMonitoringText && petMessage
     && !(displayConfig.notificationPriority && showNotification);
 
+  // 왼쪽 이동 모드 여부 (mode 2=기본 왼쪽, mode 3=등반 왼쪽, mode 4=랜덤 동적)
+  const isLeftMode = moveMode === 4 ? randomDirLeft : moveMode >= 2;
+
   return (
-    <div className="pet-container">
+    <div className="pet-container" style={(() => {
+      // 왼쪽 모드: scaleX(-1)로 펫 좌우 반전 + phase별 회전
+      const flip = isLeftMode ? 'scaleX(-1) ' : '';
+      if (movePhase === 1) return { transform: `${flip}rotate(-90deg)` };
+      if (movePhase === 2) return { transform: `${flip}rotate(180deg)` };
+      if (movePhase === 3) return { transform: `${flip}rotate(90deg)` };
+      if (isLeftMode) return { transform: 'scaleX(-1)' };
+      return undefined;
+    })()}>
       {/* 이동(run) 중 말풍선: 알림/모니터링 문구 표시 */}
       {!isHovered && !isHurt && (showNotification || showMonitoring) && (
         <div className="speech-bubble message-bubble" style={{
           bottom: `${bubbleBottom}px`,
           fontSize: `${fontSize}px`,
           ...(fontFamily ? { fontFamily } : {}),
+          ...(() => {
+            // phase 2(180° 회전) + 왼쪽 모드(scaleX 반전) 보정
+            const parts: string[] = ['translateX(-50%)'];
+            if (movePhase === 2) parts.push('rotate(180deg)');
+            if (isLeftMode) parts.push('scaleX(-1)');
+            if (parts.length > 1) return { transform: parts.join(' ') };
+            return {};
+          })(),
         }}>
           {showNotification && activeNotifications.map(n => (
             <div key={n.id} className="pet-message notification-text" style={{ color: alarmFontColor, textShadow: alarmShadow }}>{n.message}</div>
@@ -784,6 +862,13 @@ export default function MainWindow() {
           color: monitoringFontColor,
           textShadow: monitoringShadow,
           ...(fontFamily ? { fontFamily } : {}),
+          ...(() => {
+            const parts: string[] = ['translateX(-50%)'];
+            if (movePhase === 2) parts.push('rotate(180deg)');
+            if (isLeftMode) parts.push('scaleX(-1)');
+            if (parts.length > 1) return { transform: parts.join(' ') };
+            return {};
+          })(),
         }}>
           <div className="stat-row">
             {monitorConfig.cpu && <span>🖥 CPU {isTestMode ? `${testCpuValue}%` : `${cpuUsage}%`}</span>}

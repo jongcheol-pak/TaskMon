@@ -386,6 +386,21 @@ export const PET_TYPES: PetType[] = [
   },
 ];
 
+// 이동 모드 정의 (확장 가능: 새 모드 추가 시 배열에 항목만 추가)
+export interface MoveMode {
+  id: number;
+  nameKey: string;       // locales.ts 번역 키
+  descriptionKey: string; // locales.ts 설명 번역 키
+}
+
+export const MOVE_MODES: MoveMode[] = [
+  { id: 0, nameKey: 'movement.basicRight', descriptionKey: 'movement.basicRightDesc' },
+  { id: 2, nameKey: 'movement.basicLeft', descriptionKey: 'movement.basicLeftDesc' },
+  { id: 1, nameKey: 'movement.climbRight', descriptionKey: 'movement.climbRightDesc' },
+  { id: 3, nameKey: 'movement.climbLeft', descriptionKey: 'movement.climbLeftDesc' },
+  { id: 4, nameKey: 'movement.random', descriptionKey: 'movement.randomDesc' },
+];
+
 // "아무거나" 선택용 상수
 export const RANDOM_PET_ID = 'random';
 
