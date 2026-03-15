@@ -1,6 +1,37 @@
 # 프로젝트 진행 기록 (Notes)
 
 ## 최근 변경
+- 2026-03-15: 듀얼 모니터 연결 시 캐릭터 미표시(테두리만 이동) 버그 수정 — 모니터 핫플러그 시 WebView GPU 렌더링 컨텍스트 손실로 투명도가 깨지는 문제 해결. Thread 1에서 모니터 수 변경 감지 시 `set_size()` 재호출로 WebView 렌더링 표면 갱신 트리거 + `needs_redraw` 공유 플래그로 Thread 2에 전달. Thread 2에서 `SWP_FRAMECHANGED` 플래그 포함 `SetWindowPos` + `RedrawWindow`(RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW|RDW_FRAME)로 윈도우 프레임 속성 재적용 및 전체 렌더링 표면 강제 갱신. 높이 캐시 무효화로 DPI 변경 대응.
+- 2026-03-14: "아무거나" 랜덤 펫 선택 기능 추가 — 펫 목록 첫 번째에 "아무거나" 항목 추가. 선택 시 앱 실행마다 PET_TYPES에서 무작위 펫 표시. `RANDOM_PET_ID`/`resolveRandomPetId` 상수·함수 추가(types.ts). MainWindow에서 시작 시 1회 해결(`resolvedInitialPetId` ref), 설정 변경 시 즉시 랜덤 해결. localStorage에는 'random' 유지.
+- 2026-03-14: 자동차(1) 펫 추가 — 5개 개별 프레임(184x68px)을 스프라이트 스트립으로 합성. 이동/idle 공용 5프레임, hurt 1프레임. frameWidth: 184, frameHeight: 68.
+- 2026-03-14: 성능 최적화 3건(4차 리뷰) — (1) `petStyle` useMemo 의존성 정리: `eslint-disable` 제거, `makeBgSize`/`baseSize`/`flipStyle`/`opacityStyle`/`isDefaultColor`를 useMemo 내부에서 직접 계산하여 의존성 완전 명시, (2) 알림 동기화 핸들러 Date 인스턴스 4회→1회 통합(`nowDate` 변수로 자정/정시 경계 논리 불일치 방지), (3) localStorage 디바운스 확대: `monitorConfig`/`bubbleEnabled`/`alarms`의 즉시 쓰기 제거, 기존 500ms 디바운스 useEffect에 `alarms` 통합하여 대형 JSON 직렬화 메인 스레드 차단 최소화.
+- 2026-03-14: 펫 속도 조절 기능 추가 — 펫 메뉴의 펫 크기 아래에 슬라이더(0~200%, 기본 100%) 추가. 펫별 개별 속도 설정, localStorage에 `petSpeed_{petId}` 키로 저장. 이동 속도(Rust Thread 2)와 애니메이션 playbackRate 모두 사용자 속도 반영. Rust `update_pet_speed` 커맨드, `pet-speed-update` 이벤트 추가. `update_pet_type`에 `user_speed` 파라미터 추가.
+- 2026-03-14: 사람(2) 펫 추가 — Idle(8프레임)/Run(12프레임)/Jump(8프레임, 좌클릭) 적용. 원본 스프라이트 프레임 간격 32px + 좌측 16px 오프셋을 크롭하여 정렬. frameWidth: 32, frameHeight: 30.
+- 2026-03-14: 사람(1) 펫 추가 — Female Adventurer 스프라이트에서 Idle(8프레임)/Walk(8프레임)/Death(8프레임)/Dash(8프레임) 적용. 높이 불일치(30/64px) 상단 패딩으로 통일(64px). 우클릭으로 Walk↔Dash 이동 이미지 토글. frameWidth: 48.
+- 2026-03-14: 몬스터(6) 펫 추가 — Mushroom 스프라이트에서 Idle(7프레임)/Run(8프레임)/Hit(5프레임)/Stun(18프레임) 적용. 각 프레임 개별 좌우반전 처리. 우클릭 시 Stun 1회 재생. frameWidth: 80, frameHeight: 50.
+- 2026-03-14: 몬스터(5) 펫 추가 — Slime3 스프라이트에서 Idle(6프레임)/Walk(8프레임)/Hurt(5프레임)/Run(8프레임)/Attack(9프레임) 적용. 높이 불일치(35/40/54px) 상단 패딩으로 통일(54px). 우클릭 시 Attack 1회 재생 + Walk↔Run 토글.
+- 2026-03-14: 몬스터(4) 펫 추가 — Slime2 스프라이트에서 Idle(6프레임)/Walk(8프레임)/Hurt(5프레임)/Run(8프레임)/Death(10프레임) 적용. 높이 불일치(31/35/40px) 상단 패딩으로 통일(40px). 우클릭 시 Death 1회 재생 + Walk↔Run 토글.
+- 2026-03-14: 몬스터(3) 펫 추가 — Slime1 스프라이트에서 Idle(6프레임)/Walk(8프레임)/Hurt(5프레임)/Run(8프레임)/Attack(10프레임) 적용. 높이 불일치(30px vs 33px) 상단 패딩으로 통일(33px). 우클릭 시 Attack 1회 재생 + Walk↔Run 이동 이미지 토글 동시 적용. `handleContextMenu`에서 rightClickImage와 hasVariants 동시 지원 추가.
+- 2026-03-14: 몬스터(2) 펫 추가 — Orc3 스프라이트에서 Idle(4프레임)/Walk(6프레임)/Hurt(6프레임)/Run(8프레임) 적용. 높이 불일치(40px vs 44px) 상단 패딩으로 통일(44px). 우클릭으로 이동 이미지 전환(Walk↔Run). hasVariants: true.
+- 2026-03-14: 몬스터(1) 펫 추가 — Orc2 스프라이트에서 Idle(4프레임)/Walk(6프레임)/Hurt(6프레임)/Run(8프레임) 적용. 높이 불일치(35px vs 40px) 상단 패딩으로 통일(40px). 우클릭으로 이동 이미지 전환(Walk↔Run, variant 순환). hasVariants: true.
+- 2026-03-14: Finn 펫 추가 — FinnSprite.png에서 Idle(9프레임)/Run(6프레임)/Hurt(2프레임)/RightClick(5프레임) 분리. `idleFrames`를 `number[]`로 변경하여 variant별 idle 프레임 수 지원. 펫 이름/설명 다국어 처리 추가. 우클릭 시 rightClickImage 1회 재생 후 idle 복귀(hurt 패턴 동일).
+- 2026-03-14: 마우스 사용 설정 추가 — 설정 > 설정 탭에 '마우스 사용' 체크박스 추가. 체크 해제 시 캐릭터가 마우스 hover/클릭을 무시(idle 전환·모니터링 표시·이동 정지 비활성). Rust `update_mouse_enabled` 커맨드, `mouse-enabled-update` 이벤트 추가.
+- 2026-03-14: 듀얼 모니터 제거 시 캐릭터 사라지는 버그 수정 — Thread 1의 `window.show()`(비동기 Tauri API)가 윈도우가 제거된 모니터 좌표에 있을 때 실행되어 OS가 다시 숨기는 문제. Thread 2에서 텔레포트/랩어라운드 후 `SetWindowPos` 직후 Win32 `ShowWindow(SW_SHOWNA)`를 동기적으로 호출하여 유효 좌표 이동과 표시를 동일 스레드에서 보장. 텔레포트/랩어라운드 시 `smooth_y_init` 초기화 추가.
+- 2026-03-14: 배터리 충전 상태 감지 수정 — `starship_battery`의 `bat.state()`가 `Unknown`을 반환하여 충전 상태를 감지하지 못하는 문제 해결. Win32 `GetSystemPowerStatus` API로 AC 전원 연결 여부를 직접 확인하도록 변경(`is_ac_connected()`). 충전 상태를 매 폴링(1초)마다 확인하되 변경 시에만 이벤트 발송하여 플러그 탈착 즉시 반영. 배터리 잔량은 3분 간격 유지.
+- 2026-03-14: 충전 아이콘 크기/거리 설정 추가 — 모니터링 메뉴의 '펫 충전 아이콘 표시' 아래에 '충전 아이콘 크기'(크게50%/보통40%/작게30%) 콤보박스와 '충전 아이콘 거리'(-10~10) 콤보박스 추가. 체크 해제 시 비활성화. `MonitorConfig`에 `chargingIconSize`/`chargingIconDistance` 필드 추가, Rust `update_monitor_config`에 대응 파라미터 추가. 기존 localStorage에 새 필드 누락 시 invoke 실패하는 버그 수정(defaults spread 병합).
+- 2026-03-14: 펫 충전 아이콘 기능 추가 — 모니터링 메뉴에 '펫 충전 아이콘 표시' 체크박스 추가(배터리 아래 들여쓰기). 체크 시 배터리 충전 중에 캐릭터 왼쪽에 ⚡ 아이콘 표시(캐릭터 중앙 높이, 캐릭터 위치 영향 없음). 데스크탑(배터리 없음)에서는 배터리·충전 아이콘 항목 언체크+비활성화. `MonitorConfig`에 `showChargingIcon` 필드 추가, Rust `update_monitor_config`에 `show_charging_icon` 파라미터 추가.
+- 2026-03-14: NSIS 시작메뉴 바로가기 한글화 보완 — 재설치 시 기존 한글 바로가기 충돌 방지(`Delete` 후 `Rename`), 제거 시 한글 바로가기 삭제 누락 해결(`NSIS_HOOK_PREUNINSTALL` 추가).
+- 2026-03-14: 성능 최적화 4건 — (1) `getTextShadow` useMemo 캐싱으로 렌더링당 재계산 제거, (2) 알림 동기화 시 `safeParse` → `alarmsRef.current`로 불필요한 JSON 파싱 제거, (3) `evaluateMessages` 정렬을 `useMemo`로 사전 정렬하여 매 모니터링 값 변경 시 sort 제거, (4) `petStyle` IIFE → `useMemo`로 매 렌더링 객체 생성 방지.
+- 2026-03-14: 말풍선 높이 설정 추가 — 설정 > 말풍선 사용 아래에 콤보박스(0~30) 추가. 기본값 0(캐릭터 머리 위). Rust `update_bubble_height` 커맨드 추가.
+- 2026-03-14: 펫 크기 조절 기능 추가 — 펫 메뉴에 슬라이더(0~200%, 기본 100%)로 펫별 개별 크기 설정. localStorage에 `petScale_{petId}` 키로 저장. Rust `update_pet_scale` 커맨드 추가. 공룡 펫 displayScale 1.3→1.0 변경.
+- 2026-03-14: 알림 발화 시간 범위 체크 수정 — daily/absolute 알림이 `targetTime + notificationDuration` 범위를 초과하면 발화 없이 만료 처리. `checkAlarms`에 `notificationDurationSec` 파라미터 추가. 앱 시작·가져오기 핸들러에도 동일 로직 적용. 가져오기 시 이미 지난 알림이 즉시 표시되는 버그 해결.
+- 2026-03-14: 폰트 메뉴에 모니터링/알림 메시지 폰트 색상 설정 추가 — 20색 팔레트 UI로 각각 독립 설정. `FONT_COLOR_PALETTE` 상수 추가(types.ts). `update_app_settings` 커맨드에 색상 파라미터 추가. localStorage 저장 + 이벤트 동기화.
+- 2026-03-14: 자동 실행 설정 UI 프리징 수정 — `get_auto_start`/`set_auto_start` Tauri 커맨드를 동기→async로 전환하여 레지스트리 조작 시 메인 스레드 블로킹 방지.
+- 2026-03-14: 프로젝트 이름 변경 — `TaskBone` → `TaskMon`. 트레이 아이콘 툴팁 한글 "테스크몬"/영문 "TaskMon"으로 수정. package.json, tauri.conf.json, Cargo.toml, main.rs, lib.rs(레지스트리·트레이), SettingsWindow.tsx(확인 팝업), nsis-hooks.nsi(설치 경로·표시 이름), README.md 일괄 변경.
+- 2026-03-14: 공룡 우클릭 동작 변경 — 일회성 애니메이션 재생에서 variant 순환(이동 이미지 변경) 방식으로 전환. `runFrames`를 `number[]`로 변경하여 variant별 프레임 수 지원. `rightClickImage`/`rightClickFrames` 필드 제거, RightClick 이미지를 `runImages`의 두 번째 variant로 통합. 미사용 `isRightClickAnim` 상태 및 `rightClickTimerRef` 제거.
+- 2026-03-13: 공룡 펫 4종 추가 — DinoSprites 1~4 스프라이트시트에서 Idle(4프레임)/Run(6프레임)/Hurt(4프레임)/RightClick(7프레임) 분리. `PetType`에 `idleFrames`/`runFrames`/`rightClickImage`/`rightClickFrames` 필드 추가. idle 애니메이션도 CSS→Web Animations API 이전하여 프레임 수 동적 처리. 우클릭(idle 상태) 시 전용 애니메이션 재생 지원.
+- 2026-03-13: "좀비" 펫 추가 — Walk/Idle/Hurt(6프레임) 스프라이트 추가. `PetType`에 `hurtImage`/`hurtFrames`/`hasVariants`/`flipX`/`speedFactor`/`frameWidth`/`frameHeight`/`bottomPadding` 필드 추가. 펫별 hurt 애니메이션 동적 처리(CSS→Web Animations API 이전), 좌우 반전·프레임 크기·하단 여백·이동 속도 모두 펫별 동적 제어. 좀비 이동 속도 30% 감소(`speedFactor: 0.7`), Rust `AppState`에 `pet_speed_factor` 추가하여 Thread 2 이동 계산에 반영. 스프라이트 playbackRate에도 speedFactor 적용.
+- 2026-03-13: 펫 메뉴 개선 — 사이드바 "펫 색상" → "펫"으로 이름 변경. 펫 색상 커스텀 위에 펫 선택 콤보박스 추가. "해골" 펫을 기본 목록으로 등록 (run/idle 전 애니메이션 한 세트). `PetType` 인터페이스 및 `PET_TYPES` 배열 추가.
 - 2026-03-13: 알림 가져오기 즉시 발화 버그 수정 — 가져오기로 신규 알림 등록 시 이미 지난 시간의 알림이 즉시 발화되는 문제 해결. `alarm-list-update` 리스너에서 신규 알림에 대해 현재 시간 기준 발화 완료 처리 적용 (daily/absolute/hourly/relative/interval 전 타입 대응).
 - 2026-03-13: 성능 최적화 — Thread 2의 매 프레임 `outer_size()` IPC 호출을 DPI 변경 시에만 갱신하도록 캐싱. 알림 타이머의 매초 localStorage JSON 파싱을 `useRef`로 교체. 네트워크 인터페이스 목록 재구성을 30초 주기로 제한. 설정 윈도우 생성 코드 중복 제거(`open_or_focus_settings` 함수 추출). RwLock Vec clone을 Arc swap 패턴으로 교체. App.tsx(~1980줄) 컴포넌트 분리: `types.ts`(261줄) + `MainWindow.tsx`(556줄) + `SettingsWindow.tsx`(1279줄) + `App.tsx`(21줄, 라우터). 설정 윈도우에서 불필요한 모니터링 이벤트 리스너/알림 타이머/애니메이션 제거. 알림 useEffect 의존성 최적화: 리셋 로직을 마운트 전용으로 분리, interval은 `displayConfigRef`/`bubbleEnabledRef`로 최신 설정 참조하여 설정 변경 시 재생성 방지.
 - 2026-03-13: 트레이 아이콘 툴팁 추가 — 시스템 언어가 한국어면 "작업뼈다귀", 그 외 "TaskBone" 표시. `sys-locale` 크레이트 추가.
@@ -35,9 +66,7 @@
 - **배터리 폴링 타이밍 수정**: 첫 폴링을 2초 후로 지연하여 React 리스너 등록 후 이벤트 수신 보장.
 
 ## 최근 변경 요약 (2026-03-06)
-- **전체화면 감지 최적화**: 듀얼 모니터 환경에서 캐릭터가 위치한 모니터의 전체화면 여부를 정확하게 판단하고, `EnumWindows` 호출을 최소화하여 CPU 점유율을 낮춤.
-- **인터랙션 강화**: 캐릭터 좌클릭 시 아파하는 모션(Hurt) 추가, 우클릭 시 무기 교체(맨손/검/검+방패) 기능 추가.
-- **리소스 관리**: Vite 환경에서 동적 이미지 로딩 문제를 `import` 방식으로 해결하여 안정적인 렌더링 보장.
+- 전체화면 감지 최적화, 인터랙션(좌클릭 Hurt/우클릭 무기교체) 추가, Vite 동적 이미지 로딩 수정.
 
 ## 미해결 및 향후 과제
 - 없음 (현재 모든 주요 기능 구현 완료)

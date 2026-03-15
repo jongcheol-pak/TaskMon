@@ -1,111 +1,152 @@
-# Performance Analysis Report (Re-verification)
+# Performance Analysis Report
 
-**Date**: 2026-03-13
-**Analysis Type**: Static (Re-verification after optimization)
-**Target**: `src-tauri/src/lib.rs`, `src/App.tsx`, `src/types.ts`, `src/MainWindow.tsx`, `src/SettingsWindow.tsx`
-**Language**: Rust, TypeScript (React)
+**Date**: 2026-03-14
+**Target**: `src/MainWindow.tsx`, `src/SettingsWindow.tsx`, `src/types.ts`, `src-tauri/src/lib.rs`
+**Analysis Type**: Static (4차 리뷰 — 펫 8종 추가 + 속도 조절 기능 후)
 
 ---
 
 ## Executive Summary
-
-- **Overall Performance Score**: 92/100 (이전: 72/100, +20점)
-- **Critical Issues Found**: 0 (이전: 2 → 모두 해결)
-- **Warnings**: 0 (이전: 5 → 모두 해결)
-- **New Issues**: 0
-- **Estimated Performance Impact**: None (모든 이슈 해결)
-
-### Quick Verdict
-
-이전 분석에서 지적된 **Critical 2건, Warning 5건, Info 1건이 모두 해결**되었습니다. 컴포넌트 분리(App.tsx 1980줄 → 4개 파일), Thread 2 IPC 캐싱, 알림 타이머 useRef 교체, Arc swap 패턴 적용, 네트워크 인터페이스 갱신 최적화, 설정 윈도우 코드 중복 제거, 알림 useEffect 의존성 최적화가 올바르게 구현되었습니다. 새로운 성능 이슈는 발견되지 않았습니다.
+- **Overall Score**: 85/100 (이전 88 → 펫 15종 + 속도 조절 기능 추가 후 소폭 하락)
+- **Critical Issues**: 0
+- **Warnings**: 3
+- **Info**: 4
+- **Estimated Impact**: Low — 전반적으로 잘 최적화된 코드베이스. 개선 여지는 있으나 체감 성능 저하 없음.
 
 ---
 
-## Previous Issues Resolution Status
+## Findings
 
-### Critical Issues (2/2 해결)
+### Warnings
 
-| # | Issue | Status | Verification |
-|---|-------|--------|-------------|
-| 1 | Thread 2 매 프레임 `outer_size()` IPC 호출 | **해결** | `cached_win_h` + `cached_scale_for_h`로 DPI 변경 시에만 갱신 (`lib.rs:776-781, 846-854`) |
-| 2 | 알림 타이머 매초 localStorage JSON 파싱 | **해결** | `alarmsRef` useRef 패턴으로 교체 (`MainWindow.tsx:96, 180, 227`) |
+#### W1. `petStyle` useMemo 의존성 불완전 (MainWindow.tsx:713-745)
 
-### Warnings (4/5 해결)
+**위치**: `MainWindow.tsx` line 713 — `eslint-disable-next-line react-hooks/exhaustive-deps` 억제
 
-| # | Issue | Status | Verification |
-|---|-------|--------|-------------|
-| 1 | RwLock Vec 전체 clone | **해결** | `Arc<RwLock<Arc<Vec<MonitorInfo>>>>` 패턴 적용, `Arc::clone`으로 atomic ref count만 증가 (`lib.rs:556, 656-658, 662-664`) |
-| 2 | 설정 윈도우 불필요한 상태 초기화 | **해결** | 컴포넌트 분리로 SettingsWindow는 모니터링 상태/이벤트 리스너/알림 타이머/애니메이션 미포함 |
-| 3 | 설정 윈도우 생성 코드 중복 | **해결** | `open_or_focus_settings()` 함수 추출 (`lib.rs:332-360`), 트레이 메뉴 클릭/더블클릭 양쪽에서 호출 |
-| 4 | `networks.refresh(true)` 매초 호출 | **해결** | 30초 tick 카운터로 인터페이스 목록 재구성 주기 제한 (`lib.rs:603, 719-721`) |
-| 5 | 알림 useEffect 설정 변경 시 전체 리셋 | **해결** | 리셋 로직을 마운트 전용 useEffect로 분리, interval은 `displayConfigRef`/`bubbleEnabledRef`로 최신 값 참조하여 의존성 `[]`로 변경 (`MainWindow.tsx:182-310`) |
+**문제**: `makeBgSize`, `baseSize`, `flipStyle`, `opacityStyle`, `isDefaultColor` 등 매 렌더마다 재생성되는 값이 useMemo 의존성 배열에서 누락됨. `eslint-disable`로 경고를 억제하여 실질적 메모이제이션 효과가 불완전.
 
-### Info (1/1 해결)
+**영향**: Low-Medium. useMemo가 의존성 변경을 감지하지 못해 stale 값을 반환하거나, 반대로 매 렌더마다 재계산되어 메모이제이션 효과 소실.
 
-| # | Issue | Status | Verification |
-|---|-------|--------|-------------|
-| 1 | 단일 거대 컴포넌트 (~1980줄) | **해결** | 4개 파일로 분리: `App.tsx`(21줄, 라우터) + `types.ts`(261줄) + `MainWindow.tsx`(556줄) + `SettingsWindow.tsx`(1279줄) |
+**권장**: 참조하는 변수들을 useMemo 내부에서 직접 계산하거나, 의존성 배열을 정확히 명시
 
 ---
 
-## Remaining Issues
+#### W2. 알림 동기화 핸들러 내 중복 Date 인스턴스 (MainWindow.tsx:414-479)
 
-없음. 모든 이슈가 해결되었습니다.
+**위치**: `alarm-list-update` 이벤트 리스너
 
----
+**문제**: `Date.now()`, `new Date().toISOString()`, `new Date().getHours()`, `new Date().getMinutes()` — 총 4회 별도 Date 객체 생성
 
-## New Issues Check
+**영향**: Low. 각 호출 시점 차이로 인해 자정/정시 경계에서 논리적 불일치 가능성 존재 (예: `today`는 3/13인데 `currentHour`는 0시)
 
-리팩토링으로 도입된 새로운 성능 이슈를 검사했습니다:
+**권장 수정**:
+```typescript
+// Before (4회 Date 생성)
+const now = Date.now();
+const today = new Date().toISOString().slice(0, 10);
+const currentHour = new Date().getHours();
+const currentMin = new Date().getMinutes();
 
-| Check | Result | Detail |
-|-------|--------|--------|
-| 컴포넌트 분리로 인한 상태 동기화 문제 | **없음** | Tauri 이벤트 + localStorage로 올바르게 동기화 |
-| types.ts 모듈 import 오버헤드 | **없음** | 순수 타입/상수/함수만 포함, 부작용 없음 |
-| MainWindow 불필요한 리렌더링 | **없음** | 의존성 배열이 정확히 설정됨 |
-| SettingsWindow 모니터링 이벤트 리스너 | **없음** | 올바르게 제거됨 (listen 미사용) |
-| SettingsWindow 알림 타이머 | **없음** | 올바르게 제거됨 (setInterval 미사용) |
-| SettingsWindow 애니메이션 로직 | **없음** | 올바르게 제거됨 (skeletonRef/animRef 미사용) |
-| 메모리 누수 (이벤트 리스너 cleanup) | **없음** | MainWindow의 13개 리스너 모두 cleanup 함수에서 unlisten 호출 (`MainWindow.tsx:396-410`) |
-| Arc swap 패턴 정합성 | **없음** | Thread 1에서 `Arc::new(new_monitors)`로 교체, Thread 1 읽기에서 `Arc::clone`으로 참조만 복사 |
-
----
-
-## 긍정적 패턴 (기존 + 신규)
-
-### 기존 유지
-1. **전체화면 감지 배치 처리**: `check_fullscreen_all()`로 N번 EnumWindows → 1번으로 감소
-2. **Atomic 변수 활용**: lock 없는 스레드 간 통신
-3. **색상 업데이트 rAF throttle**: IPC를 프레임당 1회로 제한 (SettingsWindow)
-4. **배터리 폴링 주기 최적화**: 180초(3분)마다 폴링
-5. **중지 상태 최적화**: `is_running` false 시 CPU 점유 없음
-6. **localStorage 디바운스**: 500ms 디바운스로 디스크 I/O 최소화
-7. **이벤트 리스너 완전한 cleanup**: 메모리 누수 없음
-8. **HWND 캐싱**: 매 프레임 HWND 조회 비용 제거
-
-### 신규 추가 (이번 최적화)
-9. **outer_size() DPI 캐싱**: 초당 ~60회 IPC → DPI 전환 시에만 호출
-10. **alarmsRef useRef 패턴**: 매초 JSON.parse 제거
-11. **Arc swap 패턴**: monitors Vec clone → atomic ref count increment
-12. **네트워크 인터페이스 30초 갱신**: 매초 재구성 → 30초 주기로 제한
-13. **open_or_focus_settings 함수 추출**: 코드 중복 제거
-14. **컴포넌트 분리**: 설정 윈도우에서 불필요한 상태/리스너/타이머/애니메이션 완전 제거
-15. **알림 useEffect 의존성 최적화**: 리셋 로직 마운트 전용 분리, interval은 ref로 최신 설정 참조하여 설정 변경 시 재생성 방지
+// After (1회 Date 생성)
+const nowDate = new Date();
+const now = nowDate.getTime();
+const today = nowDate.toISOString().slice(0, 10);
+const currentHour = nowDate.getHours();
+const currentMin = nowDate.getMinutes();
+```
 
 ---
 
-## Performance Score Breakdown
+#### W3. 이벤트 핸들러 내 동기 localStorage 쓰기 (MainWindow.tsx 전역)
 
-| Category | Score | Weight | Weighted |
-|----------|-------|--------|----------|
-| CPU Efficiency (Thread 1) | 95/100 | 25% | 23.75 |
-| CPU Efficiency (Thread 2) | 95/100 | 25% | 23.75 |
-| Memory Management | 90/100 | 20% | 18.00 |
-| I/O Optimization | 95/100 | 15% | 14.25 |
-| Code Architecture | 90/100 | 15% | 13.50 |
-| **Total** | | **100%** | **93.25/100** |
+**위치**: `battery-usage`, `monitor-config-update`, `mouse-enabled-update`, `bubble-enabled-update`, `alarm-list-update` 등 다수
+
+**문제**: 이벤트 수신 즉시 `localStorage.setItem()` 호출. localStorage는 동기(blocking) I/O. `runVariant`/색상 필터는 500ms 디바운스(line 559-571)가 적용되어 있으나, 나머지 이벤트 핸들러는 즉시 쓰기.
+
+**영향**: Low. 개별 호출은 빠르지만, 알림 목록(`JSON.stringify(alarms)`)처럼 큰 객체의 직렬화는 모니터링 폴링과 겹칠 때 메인 스레드 지연 가능.
+
+**권장**: 알림 목록 등 큰 JSON 객체는 디바운스 또는 `requestIdleCallback` 활용
+
+---
+
+### Info / Minor
+
+#### I1. `scaledAnimWidth` 헬퍼 매 렌더 재생성 (MainWindow.tsx:595)
+
+`const scaledAnimWidth = (frames: number) => ...` 가 컴포넌트 본문에 선언되어 매 렌더마다 새 함수 객체 생성. 함수 생성 비용은 극히 미미하므로 현재 상태 유지 권장.
+
+#### I2. `getPetType` 선형 탐색 (types.ts:370-372)
+
+`PET_TYPES.find(p => p.id === id)` — 15개 항목 선형 탐색. O(15)로 무시 가능. 펫 수가 100+개로 증가 시 Map 전환 고려.
+
+#### I3. 18개 이벤트 리스너 단일 useEffect (MainWindow.tsx:359-557)
+
+하나의 `useEffect`에 18개 `listen()` 호출 집약. 마운트/언마운트 1회만 실행되므로 성능 영향 없음. 코드 구조 관점의 이슈.
+
+#### I4. 스프라이트 이미지 78개 정적 import (types.ts:1-77)
+
+15종 펫의 78개 이미지를 모두 정적 import. Vite가 빌드 시 최적화하므로 런타임 영향은 없으나, 번들 크기가 증가할 수 있음. lazy import나 동적 로딩은 이 규모에서는 오히려 복잡성만 증가시키므로 현재 상태 유지 권장.
+
+---
+
+## 기존 최적화 유지 확인
+
+### Rust Backend (lib.rs) — 모두 유지
+
+| 최적화 | 상태 |
+|--------|------|
+| Arc swap 패턴 (모니터 캐시) | **유지** |
+| AtomicU32 bit-pattern f32 (lock-free 속도값 공유) | **유지** |
+| DPI 변경 시에만 outer_size 조회 | **유지** |
+| EnumWindows 단일 순회 + 조기 종료 | **유지** |
+| 네트워크 인터페이스 30초 주기 갱신 | **유지** |
+| 배터리 3분 주기 폴링 | **유지** |
+| HWND 캐싱 + SetWindowPos 직접 호출 | **유지** |
+| 중지 상태 sleep 분리 (500ms/200ms) | **유지** |
+
+### React Frontend — 모두 유지
+
+| 최적화 | 상태 |
+|--------|------|
+| Ref 기반 알림 설정 참조 (displayConfigRef, bubbleEnabledRef) | **유지** |
+| alarmsRef 동기화 (타이머 내 최신 상태 참조) | **유지** |
+| 500ms 디바운스 localStorage 저장 | **유지** |
+| Web Animations API 스프라이트 제어 | **유지** |
+| sortedMessages useMemo (정렬 캐싱) | **유지** |
+| getTextShadow useMemo (색상 변경 시에만 재계산) | **유지** |
+
+---
+
+## 신규 기능 성능 영향
+
+| 신규 기능 | 성능 영향 | 비고 |
+|-----------|-----------|------|
+| 펫 8종 추가 (monster1-6, human1-2) | 무시 가능 | 정적 데이터 배열 확장, 런타임 비용 없음 |
+| 78개 스프라이트 import | 번들 크기 증가 | Vite 빌드 최적화로 런타임 영향 없음 |
+| 펫별 속도 조절 (0~200%) | 무시 가능 | 곱셈 1회 + AtomicU32 store 1회 |
+| 듀얼 우클릭 (rightClickImage + hasVariants) | 무시 가능 | 조건 분기 추가만, 새 할당 없음 |
+| `update_pet_speed` Tauri 커맨드 | 무시 가능 | atomic store + event emit 1회 |
+| `pet-speed-update` 이벤트 리스너 | 무시 가능 | localStorage 쓰기 1회 |
+
+---
+
+## Recommendations (우선순위순)
+
+| 순위 | 항목 | 난이도 | 영향 |
+|------|------|--------|------|
+| 1 | W2: Date 인스턴스 통합 (논리 버그 예방) | Low | 자정/정시 경계 불일치 방지 |
+| 2 | W1: petStyle useMemo 의존성 정리 | Medium | 정확한 메모이제이션 보장 |
+| 3 | W3: 알림 목록 등 큰 JSON localStorage 디바운스 | Medium | 메인 스레드 차단 감소 |
+
+---
+
+## Conclusion
+
+Rust 백엔드의 atomic 연산, Arc swap, 캐싱 등 핵심 최적화가 모두 유지되고 있으며, React 프론트엔드도 Ref 패턴, useMemo, 디바운스를 적절히 활용하고 있습니다.
+
+펫 8종 + 속도 조절 기능 추가로 인한 성능 저하는 사실상 없습니다. 3건의 Warning은 모두 저위험-저노력 수정이며, W2(Date 통합)는 성능보다 논리 정확성 관점에서 우선 수정을 권장합니다.
 
 ---
 
 **Report Generated by**: Performance Verifier Skill (Claude Code)
-**Report Type**: Re-verification (post-optimization)
+**Report Type**: 4차 리뷰 (펫 8종 + 속도 조절 기능 추가 후)

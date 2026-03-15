@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { type Language, resolveLanguage, createT } from "./locales";
 import {
   type MonitorConfig,
   type PetMessage,
   type Alarm,
   type DisplayConfig,
   DEFAULT_DISPLAY_CONFIG,
-  RUN_IMAGES,
-  IDLE_IMAGES,
+  getPetType,
+  RANDOM_PET_ID,
+  resolveRandomPetId,
   generateAlarmId,
   checkAlarms,
   evaluateMessages,
+  getTextShadow,
   safeParse,
   formatBytes,
 } from "./types";
@@ -29,13 +30,34 @@ export default function MainWindow() {
   const [batteryCharging, setBatteryCharging] = useState(false);
   const [isTestMode, setIsTestMode] = useState(false);
   const [testCpuValue, setTestCpuValue] = useState(50);
-  const [monitorConfig, setMonitorConfig] = useState<MonitorConfig>(() =>
-    safeParse('monitorConfig', { cpu: true, memory: true, network: false, battery: false })
-  );
+  const [monitorConfig, setMonitorConfig] = useState<MonitorConfig>(() => {
+    const defaults: MonitorConfig = { cpu: true, memory: true, network: false, battery: false, showChargingIcon: false, chargingIconSize: 'medium', chargingIconDistance: 0 };
+    return { ...defaults, ...safeParse('monitorConfig', defaults) };
+  });
   const [runVariant, setRunVariant] = useState<number>(() => {
     const saved = localStorage.getItem('petRunVariant');
     return saved !== null ? Number(saved) : 0;
   }); // 0=맨손, 1=검, 2=검+방패
+
+  // 앱 시작 시 'random'이면 실제 펫 ID로 해결 (모든 초기화에서 공유)
+  const resolvedInitialPetId = useRef(
+    (() => {
+      const saved = localStorage.getItem('selectedPetId') || RANDOM_PET_ID;
+      return saved === RANDOM_PET_ID ? resolveRandomPetId() : saved;
+    })()
+  );
+  // 선택된 펫 종류 (random이면 이미 해결된 ID로 초기화)
+  const [selectedPetId, setSelectedPetId] = useState<string>(resolvedInitialPetId.current);
+  // 펫별 사용자 크기 (0~200%, 기본 100%)
+  const [petScale, setPetScale] = useState<number>(() => {
+    const saved = localStorage.getItem(`petScale_${resolvedInitialPetId.current}`);
+    return saved ? Number(saved) : 100;
+  });
+  // 펫별 사용자 속도 배율 (0~200%, 기본 100%)
+  const [petUserSpeed, setPetUserSpeed] = useState<number>(() => {
+    const saved = localStorage.getItem(`petSpeed_${resolvedInitialPetId.current}`);
+    return saved ? Number(saved) : 100;
+  });
 
   // 색상 필터 상태 (Hue: 0~360, Saturation: 0~200, Brightness: 0~200)
   const [hue, setHue] = useState<number>(() => {
@@ -74,10 +96,20 @@ export default function MainWindow() {
   const matchedMessagesRef = useRef<string[]>([]);
   const rotateIndexRef = useRef(0);
 
+  // 설정: 마우스 사용 여부
+  const [mouseEnabled, setMouseEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('mouseEnabled');
+    return saved !== null ? saved === 'true' : true;
+  });
+
   // 설정: 말풍선 사용 여부
   const [bubbleEnabled, setBubbleEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem('bubbleEnabled');
     return saved !== null ? saved === 'true' : true;
+  });
+  const [bubbleHeight, setBubbleHeight] = useState<number>(() => {
+    const saved = localStorage.getItem('bubbleHeight');
+    return saved ? Number(saved) : 0;
   });
 
   // 알림 시스템 상태
@@ -96,11 +128,7 @@ export default function MainWindow() {
   const alarmsRef = useRef(alarms);
   const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 폰트/언어 설정
-  const [language, setLanguage] = useState<Language>(() => {
-    const saved = localStorage.getItem('language');
-    return (saved as Language) || 'system';
-  });
+  // 폰트 설정
   const [fontSize, setFontSize] = useState<number>(() => {
     const saved = localStorage.getItem('fontSize');
     return saved ? Number(saved) : 12;
@@ -108,16 +136,18 @@ export default function MainWindow() {
   const [fontFamily, setFontFamily] = useState<string>(() => {
     return localStorage.getItem('fontFamily') || '';
   });
-
-  // 번역 함수
-  const resolvedLang = resolveLanguage(language);
-  const t = createT(resolvedLang);
-  // t는 hover 말풍선에서는 사용하지 않지만, 향후 확장을 위해 유지
-  void t;
+  const [monitoringFontColor, setMonitoringFontColor] = useState<string>(() => {
+    return localStorage.getItem('monitoringFontColor') || '#FFFFFF';
+  });
+  const [alarmFontColor, setAlarmFontColor] = useState<string>(() => {
+    return localStorage.getItem('alarmFontColor') || '#FFFFFF';
+  });
 
   const skeletonRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<Animation | null>(null);
   const hurtTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isRightClickAnim, setIsRightClickAnim] = useState(false);
+  const rightClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 메인 윈도우 렌더링 완료 후 표시 (검은 창 깜빡임 방지)
   useEffect(() => {
@@ -133,18 +163,31 @@ export default function MainWindow() {
         invoke("set_polling_interval", { seconds });
       }
     }
+    // 저장된 펫의 이동 속도 배율을 Rust에 적용 (펫 고유 속도 × 사용자 속도)
+    // 'random'이면 이미 해결된 resolvedInitialPetId 사용
+    const petId = resolvedInitialPetId.current;
+    const pet = getPetType(petId);
+    const savedSpeed = localStorage.getItem(`petSpeed_${petId}`);
+    const userSpeed = savedSpeed ? Number(savedSpeed) / 100 : 1.0;
+    invoke("update_pet_type", { petId: pet.id, speedFactor: pet.speedFactor, userSpeed });
   }, []);
+
+  // 메시지 목록은 변경 시에만 정렬 (매 모니터링 값 변경 시 재정렬 방지)
+  const sortedMessages = useMemo(() =>
+    [...petMessages].sort((a, b) => b.priority - a.priority),
+    [petMessages]
+  );
 
   // 메시지 평가: 모니터링 값 변경 시마다 매칭 목록 갱신
   useEffect(() => {
-    if (petMessages.length === 0) {
+    if (sortedMessages.length === 0) {
       matchedMessagesRef.current = [];
       setPetMessage(null);
       return;
     }
 
     const effectiveCpu = isTestMode ? testCpuValue : cpuUsage;
-    const matched = evaluateMessages(petMessages, effectiveCpu, memUsage, batteryPercent, networkDown, networkUp, monitorConfig);
+    const matched = evaluateMessages(sortedMessages, effectiveCpu, memUsage, batteryPercent, networkDown, networkUp, monitorConfig);
     matchedMessagesRef.current = matched;
 
     if (!showAllMessages) {
@@ -160,7 +203,7 @@ export default function MainWindow() {
       }
       setPetMessage(matched[rotateIndexRef.current]);
     }
-  }, [cpuUsage, memUsage, batteryPercent, networkDown, networkUp, petMessages, isTestMode, testCpuValue, monitorConfig, showAllMessages]);
+  }, [cpuUsage, memUsage, batteryPercent, networkDown, networkUp, sortedMessages, isTestMode, testCpuValue, monitorConfig, showAllMessages]);
 
   // 순환 표시 타이머: showAllMessages가 켜져 있을 때만 동작
   useEffect(() => {
@@ -198,12 +241,19 @@ export default function MainWindow() {
             // 마지막 발화 시점을 현재로 리셋하여 간격을 처음부터 다시 카운트
             return { ...alarm, lastFiredAt: now, startedAt: alarm.startedAt || now };
           case 'absolute':
-          case 'daily':
-            // 이미 지난 시간이면 오늘 발화 완료로 표시
-            if (alarm.targetTime && new Date().toTimeString().slice(0, 5) >= alarm.targetTime) {
-              return { ...alarm, firedToday: today };
+          case 'daily': {
+            // 알림 시간 + 표시 시간 범위를 초과한 경우에만 발화 완료 처리
+            if (alarm.targetTime) {
+              const [th, tm] = alarm.targetTime.split(':').map(Number);
+              const target = new Date();
+              target.setHours(th, tm, 0, 0);
+              const durationMs = displayConfigRef.current.notificationDuration * 1000;
+              if (now > target.getTime() + durationMs) {
+                return { ...alarm, firedToday: today };
+              }
             }
             return alarm;
+          }
           case 'relative':
             // 이미 지난 타이머는 발화 완료 처리
             if (alarm.absoluteTarget && now >= alarm.absoluteTarget) {
@@ -237,9 +287,8 @@ export default function MainWindow() {
       const durationMs = dc.notificationDuration * 1000;
       const mode = dc.notificationMode;
 
-      const { firedMessages, updatedAlarms } = checkAlarms(currentAlarms);
+      const { firedMessages, updatedAlarms } = checkAlarms(currentAlarms, dc.notificationDuration);
       if (firedMessages.length > 0) {
-        localStorage.setItem('alarms', JSON.stringify(updatedAlarms));
         setAlarms(updatedAlarms);
 
         const newEntries = firedMessages.map(f => ({
@@ -317,7 +366,7 @@ export default function MainWindow() {
       const newSpeed = 1 + (event.payload / 10);
       speedRef.current = newSpeed;
       if (animRef.current) {
-        animRef.current.playbackRate = newSpeed;
+        animRef.current.playbackRate = newSpeed * speedFactorRef.current;
       }
       setCpuUsage(Math.round(event.payload));
     });
@@ -346,26 +395,33 @@ export default function MainWindow() {
     const unlistenBattery = listen<{percent: number, charging: boolean}>("battery-usage", (event) => {
       setBatteryPercent(event.payload.percent);
       setBatteryCharging(event.payload.charging);
+      localStorage.setItem('batteryPercent', String(event.payload.percent));
     });
     const unlistenMonitorConfig = listen<MonitorConfig>("monitor-config-update", (event) => {
       setMonitorConfig(event.payload);
-      localStorage.setItem('monitorConfig', JSON.stringify(event.payload));
+    });
+    const unlistenMouse = listen<boolean>("mouse-enabled-update", (event) => {
+      setMouseEnabled(event.payload);
+      localStorage.setItem('mouseEnabled', String(event.payload));
     });
     const unlistenBubble = listen<boolean>("bubble-enabled-update", (event) => {
       setBubbleEnabled(event.payload);
-      localStorage.setItem('bubbleEnabled', String(event.payload));
+    });
+    const unlistenBubbleHeight = listen<number>("bubble-height-update", (event) => {
+      setBubbleHeight(event.payload);
+      localStorage.setItem('bubbleHeight', String(event.payload));
     });
     // 알림 목록 동기화 (설정 윈도우 → 메인 윈도우)
     // 설정 윈도우에서 보내는 알람에는 발화 상태(lastFiredHour 등)가 없으므로,
     // 기존 localStorage의 발화 상태를 병합하여 중복 발화를 방지
     const unlistenAlarms = listen<Alarm[]>("alarm-list-update", (event) => {
-      const now = Date.now();
-      const today = new Date().toISOString().slice(0, 10);
-      const currentHHmm = new Date().toTimeString().slice(0, 5);
-      const currentHour = new Date().getHours();
-      const currentMin = new Date().getMinutes();
+      const nowDate = new Date();
+      const now = nowDate.getTime();
+      const today = nowDate.toISOString().slice(0, 10);
+      const currentHour = nowDate.getHours();
+      const currentMin = nowDate.getMinutes();
 
-      const existing = safeParse<Alarm[]>('alarms', []);
+      const existing = alarmsRef.current;
       const existingMap = new Map(existing.map(a => [a.id, a]));
       const merged = event.payload.map(alarm => {
         const prev = existingMap.get(alarm.id);
@@ -381,21 +437,34 @@ export default function MainWindow() {
             absoluteTarget: prev.absoluteTarget ?? alarm.absoluteTarget,
           };
         }
-        // 신규 알림: 이미 지난 시간이면 발화 완료 처리 (가져오기 등으로 추가 시 즉시 발화 방지)
+        // 신규 알림: 알림 시간 + 표시 시간 범위를 초과한 경우에만 발화 완료 처리
         if (!alarm.enabled) return alarm;
+        const durationMs = displayConfigRef.current.notificationDuration * 1000;
         switch (alarm.type) {
           case 'interval':
             return { ...alarm, lastFiredAt: now, startedAt: alarm.startedAt || now };
-          case 'absolute':
-            if (alarm.targetTime && currentHHmm >= alarm.targetTime) {
-              return { ...alarm, firedToday: today, enabled: false };
+          case 'absolute': {
+            if (alarm.targetTime) {
+              const [th, tm] = alarm.targetTime.split(':').map(Number);
+              const target = new Date();
+              target.setHours(th, tm, 0, 0);
+              if (now > target.getTime() + durationMs) {
+                return { ...alarm, firedToday: today, enabled: false };
+              }
             }
             return alarm;
-          case 'daily':
-            if (alarm.targetTime && currentHHmm >= alarm.targetTime) {
-              return { ...alarm, firedToday: today };
+          }
+          case 'daily': {
+            if (alarm.targetTime) {
+              const [th, tm] = alarm.targetTime.split(':').map(Number);
+              const target = new Date();
+              target.setHours(th, tm, 0, 0);
+              if (now > target.getTime() + durationMs) {
+                return { ...alarm, firedToday: today };
+              }
             }
             return alarm;
+          }
           case 'relative':
             if (alarm.absoluteTarget && now >= alarm.absoluteTarget) {
               return { ...alarm, relativeFired: true, enabled: false };
@@ -411,7 +480,6 @@ export default function MainWindow() {
         }
       });
       setAlarms(merged);
-      localStorage.setItem('alarms', JSON.stringify(merged));
     });
     // 표시 설정 동기화 (설정 윈도우 → 메인 윈도우)
     const unlistenDisplayConfig = listen<DisplayConfig>("display-config-update", (event) => {
@@ -424,10 +492,17 @@ export default function MainWindow() {
       localStorage.setItem('petMessages', JSON.stringify(event.payload));
     });
     // 폰트/언어 설정 동기화 (설정 윈도우 → 메인 윈도우)
-    const unlistenAppSettings = listen<{language: Language, fontSize: number, fontFamily: string}>("app-settings-update", (event) => {
-      setLanguage(event.payload.language);
+    const unlistenAppSettings = listen<{language: string, fontSize: number, fontFamily: string, monitoringFontColor?: string, alarmFontColor?: string}>("app-settings-update", (event) => {
       setFontSize(event.payload.fontSize);
       setFontFamily(event.payload.fontFamily);
+      if (event.payload.monitoringFontColor) {
+        setMonitoringFontColor(event.payload.monitoringFontColor);
+        localStorage.setItem('monitoringFontColor', event.payload.monitoringFontColor);
+      }
+      if (event.payload.alarmFontColor) {
+        setAlarmFontColor(event.payload.alarmFontColor);
+        localStorage.setItem('alarmFontColor', event.payload.alarmFontColor);
+      }
       localStorage.setItem('language', event.payload.language);
       localStorage.setItem('fontSize', String(event.payload.fontSize));
       localStorage.setItem('fontFamily', event.payload.fontFamily);
@@ -439,6 +514,36 @@ export default function MainWindow() {
       localStorage.setItem('showAllMessages', String(event.payload.showAll));
       localStorage.setItem('rotateInterval', String(event.payload.interval));
     });
+    // 펫 종류 동기화 (설정 윈도우 → 메인 윈도우)
+    const unlistenPetType = listen<string>("pet-type-update", (event) => {
+      const isRandom = event.payload === RANDOM_PET_ID;
+      const resolvedId = isRandom ? resolveRandomPetId() : event.payload;
+      setSelectedPetId(resolvedId);
+      setRunVariant(0); // 펫 변경 시 variant 초기화
+      localStorage.setItem('selectedPetId', event.payload); // 'random' 유지
+      localStorage.setItem('petRunVariant', '0');
+      // 해결된 펫의 저장된 크기/속도 로드
+      const savedScale = localStorage.getItem(`petScale_${resolvedId}`);
+      setPetScale(savedScale ? Number(savedScale) : 100);
+      const savedSpeed = localStorage.getItem(`petSpeed_${resolvedId}`);
+      setPetUserSpeed(savedSpeed ? Number(savedSpeed) : 100);
+      // 'random' 해결 후 실제 펫의 속도를 Rust에 적용 (update_pet_speed 경유, 재귀 방지)
+      if (isRandom) {
+        const pet = getPetType(resolvedId);
+        const userSpeed = savedSpeed ? Number(savedSpeed) / 100 : 1.0;
+        invoke("update_pet_speed", { petId: resolvedId, speedFactor: pet.speedFactor, userSpeed });
+      }
+    });
+    // 펫 크기 동기화 (설정 윈도우 → 메인 윈도우)
+    const unlistenPetScale = listen<{petId: string, scale: number}>("pet-scale-update", (event) => {
+      localStorage.setItem(`petScale_${event.payload.petId}`, String(event.payload.scale));
+      setPetScale(event.payload.scale);
+    });
+    // 펫 속도 동기화 (설정 윈도우 → 메인 윈도우)
+    const unlistenPetSpeed = listen<{petId: string, userSpeed: number}>("pet-speed-update", (event) => {
+      localStorage.setItem(`petSpeed_${event.payload.petId}`, String(Math.round(event.payload.userSpeed * 100)));
+      setPetUserSpeed(Math.round(event.payload.userSpeed * 100));
+    });
 
     return () => {
       unlisten.then((f) => f());
@@ -448,16 +553,21 @@ export default function MainWindow() {
       unlistenNetwork.then((f) => f());
       unlistenBattery.then((f) => f());
       unlistenMonitorConfig.then((f) => f());
+      unlistenMouse.then((f) => f());
       unlistenBubble.then((f) => f());
+      unlistenBubbleHeight.then((f) => f());
       unlistenAlarms.then((f) => f());
       unlistenDisplayConfig.then((f) => f());
       unlistenMessages.then((f) => f());
       unlistenAppSettings.then((f) => f());
       unlistenMsgRotate.then((f) => f());
+      unlistenPetType.then((f) => f());
+      unlistenPetScale.then((f) => f());
+      unlistenPetSpeed.then((f) => f());
     };
   }, []);
 
-  // runVariant 및 색상 필터 변경 시 localStorage에 저장 (500ms 디바운스로 디스크 I/O 최소화)
+  // 빈번히 변경되는 상태 + JSON 직렬화가 필요한 상태를 500ms 디바운스로 일괄 저장 (메인 스레드 차단 최소화)
   useEffect(() => {
     const timer = setTimeout(() => {
       localStorage.setItem('petRunVariant', String(runVariant));
@@ -467,81 +577,181 @@ export default function MainWindow() {
       localStorage.setItem('petOpacity', String(petOpacity));
       localStorage.setItem('monitorConfig', JSON.stringify(monitorConfig));
       localStorage.setItem('bubbleEnabled', String(bubbleEnabled));
+      localStorage.setItem('alarms', JSON.stringify(alarms));
     }, 500);
     return () => clearTimeout(timer);
-  }, [runVariant, hue, saturation, brightness, petOpacity, monitorConfig, bubbleEnabled]);
+  }, [runVariant, hue, saturation, brightness, petOpacity, monitorConfig, bubbleEnabled, alarms]);
 
-  // 알림 표시 타이머 정리
+  // 타이머 정리
   useEffect(() => {
     return () => {
       if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+      if (rightClickTimerRef.current) clearTimeout(rightClickTimerRef.current);
     };
   }, []);
 
-  // 스프라이트 애니메이션
+  // 현재 선택된 펫 정보
+  const currentPet = getPetType(selectedPetId);
+  const userSpeedFactor = petUserSpeed / 100;
+  const speedFactorRef = useRef(currentPet.speedFactor * userSpeedFactor);
+  speedFactorRef.current = currentPet.speedFactor * userSpeedFactor;
+  // variant 인덱스가 범위를 넘으면 0으로 보정
+  const safeVariant = runVariant < currentPet.runImages.length ? runVariant : 0;
+
+  // 스프라이트 애니메이션 (run/idle 상태를 JS에서 제어)
+  // 현재 variant의 이동/idle 프레임 수
+  const currentRunFrames = currentPet.runFrames[safeVariant] ?? currentPet.runFrames[0];
+  const currentIdleFrames = currentPet.idleFrames[safeVariant] ?? currentPet.idleFrames[0];
+  // 스케일 적용된 애니메이션 폭 계산 헬퍼
+  const userScale = petScale / 100;
+  const scaledAnimWidth = (frames: number) => Math.round(currentPet.frameWidth * frames * currentPet.displayScale * userScale);
+
   useEffect(() => {
-    // hurt 또는 hover 중이면 run 애니메이션 중단
-    if (!isHovered && !isHurt && skeletonRef.current) {
+    if (isHurt || isRightClickAnim || !skeletonRef.current) return;
+
+    if (isHovered) {
+      // idle 애니메이션
+      const totalWidth = scaledAnimWidth(currentIdleFrames);
       const anim = skeletonRef.current.animate(
         [
           { backgroundPosition: '0px 0px' },
-          { backgroundPosition: '-384px 0px' }
+          { backgroundPosition: `-${totalWidth}px 0px` }
         ],
-        { duration: 1500, iterations: Infinity, easing: 'steps(6, end)' }
+        { duration: 1200, iterations: Infinity, easing: `steps(${currentIdleFrames}, end)` }
       );
-      anim.playbackRate = speedRef.current;
+      animRef.current = anim;
+    } else {
+      // run 애니메이션 (variant별 프레임 수 적용)
+      const totalWidth = scaledAnimWidth(currentRunFrames);
+      const anim = skeletonRef.current.animate(
+        [
+          { backgroundPosition: '0px 0px' },
+          { backgroundPosition: `-${totalWidth}px 0px` }
+        ],
+        { duration: 1500, iterations: Infinity, easing: `steps(${currentRunFrames}, end)` }
+      );
+      anim.playbackRate = speedRef.current * currentPet.speedFactor * userSpeedFactor;
       animRef.current = anim;
     }
     return () => {
       if (animRef.current) { animRef.current.cancel(); animRef.current = null; }
     };
-  // runVariant 변경 시 애니메이션 재시작해야 새 이미지에 스프라이트가 적용됨
-  }, [isHovered, isHurt, runVariant]);
+  // runVariant/selectedPetId/petScale/petUserSpeed 변경 시 애니메이션 재시작
+  }, [isHovered, isHurt, isRightClickAnim, runVariant, selectedPetId, petScale, petUserSpeed]);
 
-  // 좌클릭: hurt 애니메이션 1회 재생
+  // 좌클릭: hurt 애니메이션 1회 재생 (idle 상태에서만)
   const handleClick = () => {
-    if (isHurt) return;
+    if (isHurt || isRightClickAnim || !isHovered) return;
     if (hurtTimerRef.current) clearTimeout(hurtTimerRef.current);
     setIsHurt(true);
-    hurtTimerRef.current = setTimeout(() => { setIsHurt(false); }, 400);
+    const frames = currentPet.hurtFrames;
+    const hurtDuration = frames * 200;
+    if (skeletonRef.current) {
+      const totalWidth = scaledAnimWidth(frames);
+      skeletonRef.current.animate(
+        [
+          { backgroundPosition: '0px 0px' },
+          { backgroundPosition: `-${totalWidth}px 0px` }
+        ],
+        { duration: hurtDuration, iterations: 1, easing: `steps(${frames}, end)`, fill: 'forwards' }
+      );
+    }
+    hurtTimerRef.current = setTimeout(() => { setIsHurt(false); }, hurtDuration);
   };
 
-  // 우클릭: 달리기 이미지 순환 (0→1→2→0)
+  // 우클릭: variant 순환 또는 1회 재생 애니메이션 (idle 상태에서만)
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    setRunVariant((prev) => (prev + 1) % RUN_IMAGES.length);
-  };
+    if (!isHovered || isHurt || isRightClickAnim) return;
 
-  // 클래스 결정: hurt > idle > run
-  let skeletonClass = 'skeleton';
-  if (isHurt) skeletonClass += ' hurt';
-  else if (isHovered) skeletonClass += ' idle';
-
-  // run 또는 idle 상태일 때 inline style로 이미지 및 색상 필터 적용
-  const isDefaultColor = hue === 0 && saturation === 100 && brightness === 100;
-  const opacityStyle = petOpacity < 100 ? { opacity: petOpacity / 100 } : {};
-
-  const petStyle = (() => {
-    // 초기화 상태(기본값)이면 필터 없이 원본 이미지 그대로 표시
-    if (isDefaultColor) {
-      if (isHurt) return { ...opacityStyle };
-      if (isHovered) return { backgroundImage: `url('${IDLE_IMAGES[runVariant]}')`, ...opacityStyle };
-      return { backgroundImage: `url('${RUN_IMAGES[runVariant]}')`, ...opacityStyle };
+    // rightClickImage가 있는 펫: 1회 재생 애니메이션
+    if (currentPet.rightClickImage && currentPet.rightClickFrames) {
+      setIsRightClickAnim(true);
+      const frames = currentPet.rightClickFrames;
+      const duration = frames * 200;
+      if (skeletonRef.current) {
+        const totalWidth = scaledAnimWidth(frames);
+        skeletonRef.current.animate(
+          [
+            { backgroundPosition: '0px 0px' },
+            { backgroundPosition: `-${totalWidth}px 0px` }
+          ],
+          { duration, iterations: 1, easing: `steps(${frames}, end)`, fill: 'forwards' }
+        );
+      }
+      // hasVariants도 있으면 variant 순환도 동시 적용
+      if (currentPet.hasVariants) {
+        setRunVariant((prev) => (prev + 1) % currentPet.runImages.length);
+      }
+      if (rightClickTimerRef.current) clearTimeout(rightClickTimerRef.current);
+      rightClickTimerRef.current = setTimeout(() => { setIsRightClickAnim(false); }, duration);
+      return;
     }
 
-    // 색상 필터 체인:
-    // 1. grayscale(1): 원본 색 제거
-    // 2. sepia(1): 채색 가능한 베이스 입히기
-    // 3. hue-rotate(hue - 50): sepia 기본색(~50도)을 상쇄하여 피커 색상과 일치
-    // 4. saturate: 채도 강하게 적용
-    // 5. brightness: 최종 밝기 조정
+    // hasVariants 펫: variant 순환
+    if (!currentPet.hasVariants) return;
+    setRunVariant((prev) => (prev + 1) % currentPet.runImages.length);
+  };
+
+  // 클래스 결정: hurt > rightClick > idle > run
+  let skeletonClass = 'skeleton';
+  if (isHurt) skeletonClass += ' hurt';
+  else if (isRightClickAnim) skeletonClass += ' idle';
+  else if (isHovered) skeletonClass += ' idle';
+
+  // 펫별 프레임 크기 및 하단 여백 보정 (기본 displayScale × 사용자 petScale 적용)
+  const { frameWidth, frameHeight, bottomPadding, displayScale } = currentPet;
+  const finalScale = displayScale * (petScale / 100);
+  const scaledW = Math.round(frameWidth * finalScale);
+  const scaledH = Math.round(frameHeight * finalScale);
+  const scaledMargin = bottomPadding > 0 ? `-${Math.round(bottomPadding * finalScale)}px` : undefined;
+
+  // 말풍선 위치: 캐릭터 머리 위 (bubbleHeight로 추가 높이 조절)
+  const bubbleBottom = scaledH - (bottomPadding > 0 ? Math.round(bottomPadding * finalScale) : 0) + bubbleHeight;
+
+  // 폰트 색상별 text-shadow 캐싱 (색상 변경 시에만 재계산)
+  const monitoringShadow = useMemo(() => getTextShadow(monitoringFontColor), [monitoringFontColor]);
+  const alarmShadow = useMemo(() => getTextShadow(alarmFontColor), [alarmFontColor]);
+
+  // 상태별 스타일 객체 캐싱 (의존 값 변경 시에만 재계산, 내부에서 직접 계산하여 의존성 완전 명시)
+  const petStyle = useMemo(() => {
+    const runImg = currentPet.runImages[safeVariant];
+    const idleImg = currentPet.idleImages[safeVariant];
+    const hurtImg = currentPet.hurtImage;
+
+    const makeBgSize = (frames: number) => `${Math.round(frameWidth * frames * finalScale)}px ${scaledH}px`;
+    const baseSize = { width: `${scaledW}px`, height: `${scaledH}px`, marginBottom: scaledMargin };
+    const flipStyle = currentPet.flipX ? { transform: 'scaleX(-1)' } : {};
+    const opacityStyle = petOpacity < 100 ? { opacity: petOpacity / 100 } : {};
+    const isDefaultColor = hue === 0 && saturation === 100 && brightness === 100;
+
+    // 상태별 이미지/사이즈 결정
+    let bgImage: string;
+    let bgSize: string;
+    if (isHurt) {
+      bgImage = hurtImg;
+      bgSize = makeBgSize(currentPet.hurtFrames);
+    } else if (isRightClickAnim && currentPet.rightClickImage && currentPet.rightClickFrames) {
+      bgImage = currentPet.rightClickImage;
+      bgSize = makeBgSize(currentPet.rightClickFrames);
+    } else if (isHovered) {
+      bgImage = idleImg;
+      bgSize = makeBgSize(currentIdleFrames);
+    } else {
+      bgImage = runImg;
+      bgSize = makeBgSize(currentRunFrames);
+    }
+
+    const base = { backgroundImage: `url('${bgImage}')`, backgroundSize: bgSize, ...baseSize, ...flipStyle, ...opacityStyle };
+
+    // 초기화 상태(기본값)이면 필터 없이 원본 이미지 그대로 표시
+    if (isDefaultColor) return base;
+
+    // 색상 필터 체인
     const adjustedHue = hue - 50;
     const filter = `grayscale(1) sepia(1) hue-rotate(${adjustedHue}deg) saturate(${saturation * 4}%) brightness(${brightness / 100})`;
-
-    if (isHurt) return { filter, ...opacityStyle };
-    if (isHovered) return { backgroundImage: `url('${IDLE_IMAGES[runVariant]}')`, filter, ...opacityStyle };
-    return { backgroundImage: `url('${RUN_IMAGES[runVariant]}')`, filter, ...opacityStyle };
-  })();
+    return { ...base, filter };
+  }, [currentPet, isHurt, isHovered, isRightClickAnim, safeVariant, currentRunFrames, currentIdleFrames, frameWidth, finalScale, scaledH, scaledW, scaledMargin, petOpacity, hue, saturation, brightness]);
 
   // 말풍선 표시 여부 판정 (이동 중, not hovered, not hurt)
   const showNotification = bubbleEnabled && displayConfig.showNotificationText && activeNotifications.length > 0;
@@ -554,21 +764,25 @@ export default function MainWindow() {
       {/* 이동(run) 중 말풍선: 알림/모니터링 문구 표시 */}
       {!isHovered && !isHurt && (showNotification || showMonitoring) && (
         <div className="speech-bubble message-bubble" style={{
+          bottom: `${bubbleBottom}px`,
           fontSize: `${fontSize}px`,
           ...(fontFamily ? { fontFamily } : {}),
         }}>
           {showNotification && activeNotifications.map(n => (
-            <div key={n.id} className="pet-message notification-text">{n.message}</div>
+            <div key={n.id} className="pet-message notification-text" style={{ color: alarmFontColor, textShadow: alarmShadow }}>{n.message}</div>
           ))}
           {showMonitoring && (
-            <div className="pet-message">{petMessage}</div>
+            <div className="pet-message" style={{ color: monitoringFontColor, textShadow: monitoringShadow }}>{petMessage}</div>
           )}
         </div>
       )}
       {/* hover(idle) 중: 모니터링 수치 표시 */}
       {isHovered && !isHurt && (monitorConfig.cpu || monitorConfig.memory || monitorConfig.network || monitorConfig.battery) && (
         <div className="speech-bubble" style={{
+          bottom: `${bubbleBottom}px`,
           fontSize: `${fontSize}px`,
+          color: monitoringFontColor,
+          textShadow: monitoringShadow,
           ...(fontFamily ? { fontFamily } : {}),
         }}>
           <div className="stat-row">
@@ -579,25 +793,48 @@ export default function MainWindow() {
           </div>
         </div>
       )}
-      <div
-        ref={skeletonRef}
-        className={skeletonClass}
-        style={petStyle}
-        role="button"
-        tabIndex={0}
-        aria-label="Skeleton Pet"
-        onClick={handleClick}
-        onContextMenu={handleContextMenu}
-        onKeyDown={(e) => e.key === 'Enter' && handleClick()}
-        onMouseEnter={() => {
-          setIsHovered(true);
-          invoke("set_hover", { hovered: true });
-        }}
-        onMouseLeave={() => {
-          setIsHovered(false);
-          invoke("set_hover", { hovered: false });
-        }}
-      ></div>
+      <div style={{ position: 'relative' }}>
+        {/* 충전 아이콘: 캐릭터 왼쪽 중앙에 표시 (absolute로 캐릭터 위치 영향 없음) */}
+        {monitorConfig.showChargingIcon && batteryCharging && batteryPercent >= 0 && (() => {
+          // 아이콘 크기 비율: large=50%, medium=40%, small=30%
+          const sizeRatio = monitorConfig.chargingIconSize === 'large' ? 0.5 : monitorConfig.chargingIconSize === 'small' ? 0.3 : 0.4;
+          // 아이콘 거리: 음수=가까이, 양수=멀리
+          const distance = (monitorConfig.chargingIconDistance ?? 0);
+          return (
+            <div className="charging-icon" style={{
+              position: 'absolute',
+              right: '100%',
+              top: `${Math.round((scaledH - (bottomPadding > 0 ? Math.round(bottomPadding * finalScale) : 0)) / 2)}px`,
+              transform: 'translateY(-50%)',
+              fontSize: `${Math.max(12, Math.round(scaledH * sizeRatio))}px`,
+              lineHeight: '1',
+              pointerEvents: 'none',
+              marginRight: `${1 + distance}px`,
+            }}>⚡</div>
+          );
+        })()}
+        <div
+          ref={skeletonRef}
+          className={skeletonClass}
+          style={{ ...petStyle, ...(mouseEnabled ? {} : { pointerEvents: 'none' as const }) }}
+          role="button"
+          tabIndex={0}
+          aria-label="Skeleton Pet"
+          onClick={handleClick}
+          onContextMenu={handleContextMenu}
+          onKeyDown={(e) => e.key === 'Enter' && handleClick()}
+          onMouseEnter={() => {
+            if (!mouseEnabled) return;
+            setIsHovered(true);
+            invoke("set_hover", { hovered: true });
+          }}
+          onMouseLeave={() => {
+            if (!mouseEnabled) return;
+            setIsHovered(false);
+            invoke("set_hover", { hovered: false });
+          }}
+        ></div>
+      </div>
     </div>
   );
 }

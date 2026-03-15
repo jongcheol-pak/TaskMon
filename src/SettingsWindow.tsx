@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { save, open, ask } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { type Language, resolveLanguage, createT } from "./locales";
@@ -15,6 +16,9 @@ import {
   DEFAULT_DISPLAY_CONFIG,
   FONT_SIZE_OPTIONS,
   FONT_FAMILY_OPTIONS,
+  FONT_COLOR_PALETTE,
+  PET_TYPES,
+  RANDOM_PET_ID,
   generateAlarmId,
   isValidAlarm,
   isValidPetMessage,
@@ -24,11 +28,32 @@ import {
 
 export default function SettingsWindow() {
   // 설정 탭 상태
-  const [settingsTab, setSettingsTab] = useState<string>("test");
+  const isDebug = import.meta.env.DEV;
+  const [settingsTab, setSettingsTab] = useState<string>(isDebug ? "test" : "color");
+  // 앱 버전
+  const [appVersion, setAppVersion] = useState<string>("");
+  useEffect(() => { getVersion().then(setAppVersion); }, []);
 
   // 테스트 모드 상태
   const [isTestMode, setIsTestMode] = useState(false);
   const [testCpuValue, setTestCpuValue] = useState(50);
+
+  // 펫 선택 상태
+  const [selectedPetId, setSelectedPetId] = useState<string>(() => {
+    return localStorage.getItem('selectedPetId') || RANDOM_PET_ID;
+  });
+  // 펫 크기 상태 (펫별 개별 저장, 0~200%, 기본 100%)
+  const [petScale, setPetScale] = useState<number>(() => {
+    const id = localStorage.getItem('selectedPetId') || RANDOM_PET_ID;
+    const saved = localStorage.getItem(`petScale_${id}`);
+    return saved ? Number(saved) : 100;
+  });
+  // 펫 속도 상태 (펫별 개별 저장, 0~200%, 기본 100%)
+  const [petSpeed, setPetSpeed] = useState<number>(() => {
+    const id = localStorage.getItem('selectedPetId') || RANDOM_PET_ID;
+    const saved = localStorage.getItem(`petSpeed_${id}`);
+    return saved ? Number(saved) : 100;
+  });
 
   // 색상 필터 상태 (Hue: 0~360, Saturation: 0~200, Brightness: 0~200)
   const [hue, setHue] = useState<number>(() => {
@@ -49,15 +74,21 @@ export default function SettingsWindow() {
   });
 
   // 모니터링 설정
-  const [monitorConfig, setMonitorConfig] = useState<MonitorConfig>(() =>
-    safeParse('monitorConfig', { cpu: true, memory: true, network: false, battery: false })
-  );
+  const [monitorConfig, setMonitorConfig] = useState<MonitorConfig>(() => {
+    const defaults: MonitorConfig = { cpu: true, memory: true, network: false, battery: false, showChargingIcon: false, chargingIconSize: 'medium', chargingIconDistance: 0 };
+    return { ...defaults, ...safeParse('monitorConfig', defaults) };
+  });
 
   // 모니터링 프리뷰용 기본값 (이벤트로 업데이트하지 않음)
   const cpuUsage = 0;
   const memUsage = 0;
   const networkDown = 0;
-  const batteryPercent = -1;
+  // 배터리 유무: MainWindow가 저장한 batteryPercent로 판정 (-1 또는 미저장 = 배터리 없음)
+  const storedBatteryPercent = (() => {
+    const saved = localStorage.getItem('batteryPercent');
+    return saved !== null ? Number(saved) : -1;
+  })();
+  const hasBattery = storedBatteryPercent >= 0;
 
   // 설정: 폴링 간격 (초)
   const [pollingInput, setPollingInput] = useState<string>(() => {
@@ -86,6 +117,16 @@ export default function SettingsWindow() {
   });
 
   // 설정: 말풍선 사용 여부
+  const [bubbleHeight, setBubbleHeight] = useState<number>(() => {
+    const saved = localStorage.getItem('bubbleHeight');
+    return saved ? Number(saved) : 0;
+  });
+  // 설정: 마우스 사용 여부
+  const [mouseEnabled, setMouseEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('mouseEnabled');
+    return saved !== null ? saved === 'true' : true;
+  });
+
   const [bubbleEnabled, setBubbleEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem('bubbleEnabled');
     return saved !== null ? saved === 'true' : true;
@@ -136,6 +177,12 @@ export default function SettingsWindow() {
   const [fontFamily, setFontFamily] = useState<string>(() => {
     return localStorage.getItem('fontFamily') || '';
   });
+  const [monitoringFontColor, setMonitoringFontColor] = useState<string>(() => {
+    return localStorage.getItem('monitoringFontColor') || '#FFFFFF';
+  });
+  const [alarmFontColor, setAlarmFontColor] = useState<string>(() => {
+    return localStorage.getItem('alarmFontColor') || '#FFFFFF';
+  });
 
   // 자동 실행 상태 (레지스트리 조회)
   const [autoStart, setAutoStart] = useState(false);
@@ -161,10 +208,11 @@ export default function SettingsWindow() {
       localStorage.setItem('petBrightness', String(brightness));
       localStorage.setItem('petOpacity', String(petOpacity));
       localStorage.setItem('monitorConfig', JSON.stringify(monitorConfig));
+      localStorage.setItem('mouseEnabled', String(mouseEnabled));
       localStorage.setItem('bubbleEnabled', String(bubbleEnabled));
     }, 500);
     return () => clearTimeout(timer);
-  }, [hue, saturation, brightness, petOpacity, monitorConfig, bubbleEnabled]);
+  }, [hue, saturation, brightness, petOpacity, monitorConfig, mouseEnabled, bubbleEnabled]);
 
   // 컴포넌트 언마운트 시 pending rAF 정리
   useEffect(() => {
@@ -212,6 +260,13 @@ export default function SettingsWindow() {
     invoke("update_monitor_config", updated);
   };
 
+  // 충전 아이콘 설정값 변경 (콤보박스용)
+  const handleMonitorConfigChange = (key: keyof MonitorConfig, value: string | number) => {
+    const updated = { ...monitorConfig, [key]: value };
+    setMonitorConfig(updated);
+    invoke("update_monitor_config", updated);
+  };
+
   // 알림 저장 및 메인 윈도우 동기화
   const saveAndSyncAlarms = useCallback((newAlarms: Alarm[]) => {
     setAlarms(newAlarms);
@@ -240,14 +295,18 @@ export default function SettingsWindow() {
   }, []);
 
   // 폰트/언어 설정 저장 및 메인 윈도우 동기화
-  const saveAndSyncAppSettings = useCallback((lang: Language, size: number, family: string) => {
+  const saveAndSyncAppSettings = useCallback((lang: Language, size: number, family: string, monColor: string, almColor: string) => {
     setLanguage(lang);
     setFontSize(size);
     setFontFamily(family);
+    setMonitoringFontColor(monColor);
+    setAlarmFontColor(almColor);
     localStorage.setItem('language', lang);
     localStorage.setItem('fontSize', String(size));
     localStorage.setItem('fontFamily', family);
-    invoke('update_app_settings', { language: lang, fontSize: size, fontFamily: family });
+    localStorage.setItem('monitoringFontColor', monColor);
+    localStorage.setItem('alarmFontColor', almColor);
+    invoke('update_app_settings', { language: lang, fontSize: size, fontFamily: family, monitoringFontColor: monColor, alarmFontColor: almColor });
   }, []);
 
   // 모니터링 메시지 추가
@@ -386,7 +445,7 @@ export default function SettingsWindow() {
       // 기존 목록이 있으면 확인 팝업
       if (alarms.length > 0) {
         const confirmed = await ask(t('export.confirmDelete'), {
-          title: 'TaskBone',
+          title: 'TaskMon',
           kind: 'warning',
         });
         if (!confirmed) return;
@@ -432,7 +491,7 @@ export default function SettingsWindow() {
       // 기존 목록이 있으면 확인 팝업
       if (petMessages.length > 0) {
         const confirmed = await ask(t('export.confirmDelete'), {
-          title: 'TaskBone',
+          title: 'TaskMon',
           kind: 'warning',
         });
         if (!confirmed) return;
@@ -506,11 +565,11 @@ export default function SettingsWindow() {
       <nav className="settings-sidebar">
         <h2 className="sidebar-title">{t('sidebar.title')}</h2>
         <ul className="sidebar-menu">
-          <li>
+          {isDebug && <li>
             <button className={`sidebar-item ${settingsTab === "test" ? "active" : ""}`} onClick={() => setSettingsTab("test")}>
               {t('sidebar.testMode')}
             </button>
-          </li>
+          </li>}
           <li>
             <button className={`sidebar-item ${settingsTab === "color" ? "active" : ""}`} onClick={() => setSettingsTab("color")}>
               {t('sidebar.petColor')}
@@ -542,10 +601,11 @@ export default function SettingsWindow() {
             </button>
           </li>
         </ul>
+        {appVersion && <div className="sidebar-version">v{appVersion}</div>}
       </nav>
       <div className="settings-content-wrapper">
       <main className="settings-content">
-        {settingsTab === "test" && (
+        {isDebug && settingsTab === "test" && (
           <div className="settings-section">
             <h3>{t('test.title')}</h3>
             <p className="description">{t('test.description')}</p>
@@ -578,6 +638,73 @@ export default function SettingsWindow() {
         )}
 
         {settingsTab === "color" && (
+          <>
+          <div className="settings-section">
+            {/* 펫 선택 */}
+            <h3>{t('pet.label')}</h3>
+            <div className="pet-select-row">
+              <select
+                className="alarm-select"
+                value={selectedPetId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSelectedPetId(id);
+                  localStorage.setItem('selectedPetId', id);
+                  const pet = PET_TYPES.find(p => p.id === id);
+                  // 펫별 저장된 크기/속도 로드
+                  const savedScale = localStorage.getItem(`petScale_${id}`);
+                  const scale = savedScale ? Number(savedScale) : 100;
+                  setPetScale(scale);
+                  const savedSpeed = localStorage.getItem(`petSpeed_${id}`);
+                  const speed = savedSpeed ? Number(savedSpeed) : 100;
+                  setPetSpeed(speed);
+                  invoke("update_pet_type", { petId: id, speedFactor: pet?.speedFactor ?? 1.0, userSpeed: speed / 100 });
+                }}
+              >
+                <option key={RANDOM_PET_ID} value={RANDOM_PET_ID}>{t('pet.random')}</option>
+                {PET_TYPES.map((pet) => (
+                  <option key={pet.id} value={pet.id}>{t(`pet.${pet.id}`)}</option>
+                ))}
+              </select>
+            </div>
+            <p className="setting-description">{t('pet.description')}</p>
+            <div className="setting-item" style={{ marginTop: '8px' }}>
+              <span className="setting-label">{t('pet.scale')}</span>
+              <input
+                type="range"
+                min={0}
+                max={200}
+                value={petScale}
+                onChange={(e) => {
+                  const scale = Number(e.target.value);
+                  setPetScale(scale);
+                  localStorage.setItem(`petScale_${selectedPetId}`, String(scale));
+                  invoke("update_pet_scale", { petId: selectedPetId, scale });
+                }}
+                style={{ flex: 1 }}
+              />
+              <span style={{ minWidth: '40px', textAlign: 'right', fontSize: '13px', color: '#ccc' }}>{petScale}%</span>
+            </div>
+            <div className="setting-item" style={{ marginTop: '8px' }}>
+              <span className="setting-label">{t('pet.speed')}</span>
+              <input
+                type="range"
+                min={0}
+                max={200}
+                value={petSpeed}
+                onChange={(e) => {
+                  const speed = Number(e.target.value);
+                  setPetSpeed(speed);
+                  localStorage.setItem(`petSpeed_${selectedPetId}`, String(speed));
+                  const pet = PET_TYPES.find(p => p.id === selectedPetId);
+                  invoke("update_pet_speed", { petId: selectedPetId, speedFactor: pet?.speedFactor ?? 1.0, userSpeed: speed / 100 });
+                }}
+                style={{ flex: 1 }}
+              />
+              <span style={{ minWidth: '40px', textAlign: 'right', fontSize: '13px', color: '#ccc' }}>{petSpeed}%</span>
+            </div>
+          </div>
+
           <div className="settings-section">
             <h3>{t('color.title')}</h3>
             <p className="description">{t('color.description')}</p>
@@ -671,6 +798,7 @@ export default function SettingsWindow() {
               </button>
             </div>
           </div>
+          </>
         )}
 
         {settingsTab === "monitoring" && (
@@ -693,11 +821,45 @@ export default function SettingsWindow() {
                 <span className="monitor-label">{t('monitor.network')}</span>
                 <span className="monitor-preview">{formatBytes(networkDown)}/s</span>
               </label>
-              <label className="monitor-item">
-                <input type="checkbox" checked={monitorConfig.battery} onChange={() => handleMonitorToggle('battery')} />
+              <label className="monitor-item" style={{ opacity: hasBattery ? 1 : 0.4 }}>
+                <input type="checkbox" checked={hasBattery && monitorConfig.battery} disabled={!hasBattery} onChange={() => handleMonitorToggle('battery')} />
                 <span className="monitor-label">{t('monitor.battery')}</span>
-                <span className="monitor-preview">{batteryPercent >= 0 ? `${batteryPercent}%` : t('monitor.batteryNone')}</span>
+                <span className="monitor-preview">{hasBattery ? `${storedBatteryPercent}%` : t('monitor.batteryNone')}</span>
               </label>
+              <label className="monitor-item" style={{ paddingLeft: '24px', opacity: hasBattery ? 1 : 0.4 }}>
+                <input type="checkbox" checked={hasBattery && monitorConfig.showChargingIcon} disabled={!hasBattery} onChange={() => handleMonitorToggle('showChargingIcon')} />
+                <span className="monitor-label">{t('monitor.chargingIcon')}</span>
+              </label>
+              {/* 충전 아이콘 크기 */}
+              <div className="monitor-item" style={{ paddingLeft: '48px', opacity: hasBattery && monitorConfig.showChargingIcon ? 1 : 0.4, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span className="monitor-label">{t('monitor.chargingIconSize')}</span>
+                <select
+                  value={monitorConfig.chargingIconSize || 'medium'}
+                  disabled={!hasBattery || !monitorConfig.showChargingIcon}
+                  onChange={(e) => handleMonitorConfigChange('chargingIconSize', e.target.value)}
+                  className="polling-input"
+                  style={{ width: '80px' }}
+                >
+                  <option value="large">{t('monitor.chargingIconSizeLarge')}</option>
+                  <option value="medium">{t('monitor.chargingIconSizeMedium')}</option>
+                  <option value="small">{t('monitor.chargingIconSizeSmall')}</option>
+                </select>
+              </div>
+              {/* 충전 아이콘 거리 */}
+              <div className="monitor-item" style={{ paddingLeft: '48px', opacity: hasBattery && monitorConfig.showChargingIcon ? 1 : 0.4, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span className="monitor-label">{t('monitor.chargingIconDistance')}</span>
+                <select
+                  value={monitorConfig.chargingIconDistance ?? 0}
+                  disabled={!hasBattery || !monitorConfig.showChargingIcon}
+                  onChange={(e) => handleMonitorConfigChange('chargingIconDistance', Number(e.target.value))}
+                  className="polling-input"
+                  style={{ width: '60px' }}
+                >
+                  {Array.from({ length: 21 }, (_, i) => i - 10).map(v => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="setting-item" style={{ marginTop: '12px' }}>
               <span className="setting-label">{t('general.pollingLabel')}</span>
@@ -1198,7 +1360,7 @@ export default function SettingsWindow() {
                   value={fontSize}
                   onChange={(e) => {
                     const size = Number(e.target.value);
-                    saveAndSyncAppSettings(language, size, fontFamily);
+                    saveAndSyncAppSettings(language, size, fontFamily, monitoringFontColor, alarmFontColor);
                   }}
                 >
                   {FONT_SIZE_OPTIONS.map(size => (
@@ -1212,7 +1374,7 @@ export default function SettingsWindow() {
                   className="alarm-select"
                   value={fontFamily}
                   onChange={(e) => {
-                    saveAndSyncAppSettings(language, fontSize, e.target.value);
+                    saveAndSyncAppSettings(language, fontSize, e.target.value, monitoringFontColor, alarmFontColor);
                   }}
                 >
                   {FONT_FAMILY_OPTIONS.map(f => (
@@ -1221,6 +1383,32 @@ export default function SettingsWindow() {
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="setting-item color-setting">
+                <span className="setting-label">{t('font.monitoringColor')}</span>
+                <div className="font-color-palette">
+                  {FONT_COLOR_PALETTE.map(color => (
+                    <button
+                      key={`mon-${color}`}
+                      className={`font-color-swatch${monitoringFontColor === color ? ' selected' : ''}`}
+                      style={{ backgroundColor: color }}
+                      onClick={() => saveAndSyncAppSettings(language, fontSize, fontFamily, color, alarmFontColor)}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="setting-item color-setting">
+                <span className="setting-label">{t('font.alarmColor')}</span>
+                <div className="font-color-palette">
+                  {FONT_COLOR_PALETTE.map(color => (
+                    <button
+                      key={`alm-${color}`}
+                      className={`font-color-swatch${alarmFontColor === color ? ' selected' : ''}`}
+                      style={{ backgroundColor: color }}
+                      onClick={() => saveAndSyncAppSettings(language, fontSize, fontFamily, monitoringFontColor, color)}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -1244,24 +1432,58 @@ export default function SettingsWindow() {
                 />
                 <span className="setting-label">{t('general.autoStart')}</span>
               </label>
-              <label className="setting-item">
-                <input
-                  type="checkbox"
-                  checked={bubbleEnabled}
-                  onChange={(e) => {
-                    setBubbleEnabled(e.target.checked);
-                    invoke("update_bubble_enabled", { enabled: e.target.checked });
-                  }}
-                />
-                <span className="setting-label">{t('general.bubbleLabel')}</span>
-              </label>
+              <div className="setting-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="checkbox"
+                    checked={mouseEnabled}
+                    onChange={(e) => {
+                      setMouseEnabled(e.target.checked);
+                      invoke("update_mouse_enabled", { enabled: e.target.checked });
+                    }}
+                  />
+                  <span className="setting-label">{t('general.mouseEnabled')}</span>
+                </label>
+                <span style={{ paddingLeft: '26px', fontSize: '11px', color: '#888', lineHeight: '1.4' }}>{t('general.mouseEnabledDesc')}</span>
+              </div>
+              <div className="setting-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="checkbox"
+                    checked={bubbleEnabled}
+                    onChange={(e) => {
+                      setBubbleEnabled(e.target.checked);
+                      invoke("update_bubble_enabled", { enabled: e.target.checked });
+                    }}
+                  />
+                  <span className="setting-label">{t('general.bubbleLabel')}</span>
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingLeft: '26px', opacity: bubbleEnabled ? 1 : 0.4 }}>
+                  <span className="setting-label">{t('general.bubbleHeight')}</span>
+                  <select
+                    className="alarm-select"
+                    value={bubbleHeight}
+                    disabled={!bubbleEnabled}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setBubbleHeight(val);
+                      localStorage.setItem('bubbleHeight', String(val));
+                      invoke("update_bubble_height", { height: val });
+                    }}
+                  >
+                    {Array.from({ length: 31 }, (_, i) => (
+                      <option key={i} value={i}>{i}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               <div className="setting-item">
                 <span className="setting-label">{t('general.language')}</span>
                 <select
                   className="alarm-select"
                   value={language}
                   onChange={(e) => {
-                    saveAndSyncAppSettings(e.target.value as Language, fontSize, fontFamily);
+                    saveAndSyncAppSettings(e.target.value as Language, fontSize, fontFamily, monitoringFontColor, alarmFontColor);
                   }}
                 >
                   <option value="system">{t('general.langSystem')}</option>

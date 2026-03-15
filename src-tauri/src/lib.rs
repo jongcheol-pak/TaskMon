@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 한 번의 EnumWindows 순회로 여러 모니터의 전체화면 여부를 동시에 체크
@@ -168,15 +168,51 @@ fn get_work_area_for_monitor(monitor_x: i32, monitor_y: i32) -> Option<[i32; 4]>
 fn get_work_area_for_monitor(_monitor_x: i32, _monitor_y: i32) -> Option<[i32; 4]> {
     None
 }
+
+/// AC 전원 연결 여부를 Win32 GetSystemPowerStatus API로 직접 확인
+/// starship_battery의 State가 Unknown을 반환하는 환경에서도 안정적으로 동작
+#[cfg(target_os = "windows")]
+fn is_ac_connected() -> bool {
+    #[repr(C)]
+    struct SystemPowerStatus {
+        ac_line_status: u8,
+        battery_flag: u8,
+        battery_life_percent: u8,
+        system_status_flag: u8,
+        battery_life_time: u32,
+        battery_full_life_time: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetSystemPowerStatus(lp: *mut SystemPowerStatus) -> i32;
+    }
+
+    unsafe {
+        let mut status = std::mem::zeroed::<SystemPowerStatus>();
+        if GetSystemPowerStatus(&mut status) != 0 {
+            status.ac_line_status == 1
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_ac_connected() -> bool {
+    false
+}
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
 
 struct AppState {
-    is_hovered: Arc<Mutex<bool>>,
+    is_hovered: Arc<AtomicBool>,
     test_cpu: Arc<AtomicI32>,
     polling_interval_ms: Arc<AtomicU64>,
+    /// 펫별 이동 속도 배율 (1.0 = 기본, 0.7 = 30% 느림)
+    pet_speed_factor: Arc<AtomicU32>,
 }
 
 /// 모니터링 메시지 동기화 (설정 → 메인 윈도우 이벤트 릴레이)
@@ -205,9 +241,7 @@ fn show_main_window(app: AppHandle) {
 
 #[tauri::command]
 fn set_hover(state: State<'_, AppState>, hovered: bool) {
-    if let Ok(mut is_hovered) = state.is_hovered.lock() {
-        *is_hovered = hovered;
-    }
+    state.is_hovered.store(hovered, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -215,6 +249,35 @@ fn set_test_cpu(app: AppHandle, state: State<'_, AppState>, usage: i32) {
     state.test_cpu.store(usage, Ordering::Relaxed);
     // 테스트 모드 상태를 메인 윈도우에 동기화
     let _ = app.emit("test-mode-sync", usage);
+}
+
+/// 펫 종류 변경을 설정 윈도우 → 메인 윈도우로 동기화 + 이동 속도 배율 갱신
+#[tauri::command]
+fn update_pet_type(app: AppHandle, state: State<'_, AppState>, pet_id: String, speed_factor: f32, user_speed: f32) {
+    // 속도 배율 = 펫 고유 속도 × 사용자 속도 배율
+    let combined = speed_factor * user_speed;
+    state.pet_speed_factor.store(combined.to_bits(), Ordering::Relaxed);
+    let _ = app.emit("pet-type-update", &pet_id);
+}
+
+/// 펫 크기 변경을 설정 윈도우 → 메인 윈도우로 동기화
+#[tauri::command]
+fn update_pet_scale(app: AppHandle, pet_id: String, scale: u32) {
+    let _ = app.emit("pet-scale-update", serde_json::json!({
+        "petId": pet_id,
+        "scale": scale
+    }));
+}
+
+/// 펫 속도 변경을 설정 윈도우 → 메인 윈도우로 동기화 + 이동 속도 갱신
+#[tauri::command]
+fn update_pet_speed(app: AppHandle, state: State<'_, AppState>, pet_id: String, speed_factor: f32, user_speed: f32) {
+    let combined = speed_factor * user_speed;
+    state.pet_speed_factor.store(combined.to_bits(), Ordering::Relaxed);
+    let _ = app.emit("pet-speed-update", serde_json::json!({
+        "petId": pet_id,
+        "userSpeed": user_speed
+    }));
 }
 
 #[tauri::command]
@@ -255,41 +318,56 @@ fn update_display_config(app: AppHandle, show_monitoring: bool, show_notificatio
 }
 
 #[tauri::command]
+fn update_mouse_enabled(app: AppHandle, enabled: bool) {
+    let _ = app.emit("mouse-enabled-update", enabled);
+}
+
+#[tauri::command]
 fn update_bubble_enabled(app: AppHandle, enabled: bool) {
     let _ = app.emit("bubble-enabled-update", enabled);
 }
 
+#[tauri::command]
+fn update_bubble_height(app: AppHandle, height: u32) {
+    let _ = app.emit("bubble-height-update", height);
+}
+
 /// 폰트/언어 설정 동기화 (설정 → 메인 윈도우)
 #[tauri::command]
-fn update_app_settings(app: AppHandle, language: String, font_size: u32, font_family: String) {
+fn update_app_settings(app: AppHandle, language: String, font_size: u32, font_family: String, monitoring_font_color: String, alarm_font_color: String) {
     let _ = app.emit("app-settings-update", serde_json::json!({
         "language": language,
         "fontSize": font_size,
-        "fontFamily": font_family
+        "fontFamily": font_family,
+        "monitoringFontColor": monitoring_font_color,
+        "alarmFontColor": alarm_font_color
     }));
 }
 
 #[tauri::command]
-fn update_monitor_config(app: AppHandle, cpu: bool, memory: bool, network: bool, battery: bool) {
+fn update_monitor_config(app: AppHandle, cpu: bool, memory: bool, network: bool, battery: bool, show_charging_icon: bool, charging_icon_size: String, charging_icon_distance: i32) {
     let _ = app.emit(
         "monitor-config-update",
         serde_json::json!({
             "cpu": cpu,
             "memory": memory,
             "network": network,
-            "battery": battery
+            "battery": battery,
+            "showChargingIcon": show_charging_icon,
+            "chargingIconSize": charging_icon_size,
+            "chargingIconDistance": charging_icon_distance
         }),
     );
 }
 
-/// 자동 실행 레지스트리 조회
+/// 자동 실행 레지스트리 조회 (async로 메인 스레드 블로킹 방지)
 #[tauri::command]
-fn get_auto_start() -> bool {
+async fn get_auto_start() -> bool {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
         let output = Command::new("reg")
-            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskBone"])
+            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskMon"])
             .output();
         matches!(output, Ok(o) if o.status.success())
     }
@@ -297,9 +375,9 @@ fn get_auto_start() -> bool {
     { false }
 }
 
-/// 자동 실행 레지스트리 설정/해제
+/// 자동 실행 레지스트리 설정/해제 (async로 메인 스레드 블로킹 방지)
 #[tauri::command]
-fn set_auto_start(enabled: bool) -> Result<(), String> {
+async fn set_auto_start(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
@@ -308,7 +386,7 @@ fn set_auto_start(enabled: bool) -> Result<(), String> {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             let exe_path = exe.to_string_lossy().to_string();
             let output = Command::new("reg")
-                .args(["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskBone", "/t", "REG_SZ", "/d", &exe_path, "/f"])
+                .args(["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskMon", "/t", "REG_SZ", "/d", &exe_path, "/f"])
                 .output()
                 .map_err(|e| e.to_string())?;
             if !output.status.success() {
@@ -316,7 +394,7 @@ fn set_auto_start(enabled: bool) -> Result<(), String> {
             }
         } else {
             let output = Command::new("reg")
-                .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskBone", "/f"])
+                .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskMon", "/f"])
                 .output()
                 .map_err(|e| e.to_string())?;
             if !output.status.success() {
@@ -375,7 +453,7 @@ fn build_tray_menu(app: &AppHandle, running: bool) -> tauri::Result<Menu<tauri::
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app_state_hover = Arc::new(Mutex::new(false));
+    let app_state_hover = Arc::new(AtomicBool::new(false));
     let thread_hover_state = Arc::clone(&app_state_hover);
 
     // 실행 상태 플래그: true = 실행 중, false = 중지
@@ -397,6 +475,9 @@ pub fn run() {
     // Thread 1 → Thread 2: 모니터 변경 시 텔레포트 좌표 (i64::MIN = 텔레포트 불필요)
     let shared_teleport_x = Arc::new(AtomicI64::new(i64::MIN));
 
+    // Thread 1 → Thread 2: 모니터 변경 시 렌더링 갱신 요청 플래그
+    let shared_needs_redraw = Arc::new(AtomicBool::new(false));
+
     // setup 클로저(move)에 넘길 clone 미리 준비
     let is_running_tray = Arc::clone(&is_running);
     let shared_pet_x_t1 = Arc::clone(&shared_pet_x);
@@ -405,12 +486,19 @@ pub fn run() {
     let on_fullscreen_t2 = Arc::clone(&shared_on_fullscreen);
     let teleport_x_t1 = Arc::clone(&shared_teleport_x);
     let teleport_x_t2 = Arc::clone(&shared_teleport_x);
+    let needs_redraw_t1 = Arc::clone(&shared_needs_redraw);
+    let needs_redraw_t2 = Arc::clone(&shared_needs_redraw);
+
+    // 펫별 이동 속도 배율 (기본 1.0)
+    let pet_speed_factor = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    let pet_speed_factor_t2 = Arc::clone(&pet_speed_factor);
 
     tauri::Builder::default()
         .manage(AppState {
             is_hovered: app_state_hover,
             test_cpu: Arc::clone(&test_cpu),
             polling_interval_ms: Arc::clone(&polling_interval_ms),
+            pet_speed_factor,
         })
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
             // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
@@ -429,9 +517,9 @@ pub fn run() {
                     .unwrap_or_default()
                     .starts_with("ko")
                 {
-                    "작업 뼈다귀"
+                    "테스크몬"
                 } else {
-                    "TaskBone"
+                    "TaskMon"
                 };
 
                 TrayIconBuilder::with_id("main-tray")
@@ -591,6 +679,7 @@ pub fn run() {
             let pet_x_reader = Arc::clone(&shared_pet_x_t1);
             let on_fs_writer = Arc::clone(&on_fullscreen_t1);
             let teleport_writer = Arc::clone(&teleport_x_t1);
+            let redraw_writer = Arc::clone(&needs_redraw_t1);
             let polling_ms_t1 = Arc::clone(&polling_interval_ms);
             std::thread::spawn(move || {
                 let mut sys = sysinfo::System::new();
@@ -605,6 +694,8 @@ pub fn run() {
                 // 배터리 모니터링 초기화
                 let battery_manager = starship_battery::Manager::new().ok();
                 let mut battery_tick: u32 = 179; // 첫 폴링을 2초 후로 지연 (React 리스너 등록 대기), 이후 3분마다
+                let mut cached_battery_percent: i32 = -1; // 배터리 잔량 캐시 (-1 = 배터리 없음)
+                let mut prev_charging = false; // 이전 충전 상태 (변경 감지용)
 
                 loop {
                     // 중지 상태: 500ms 대기 후 다음 루프 (CPU/메모리 점유 없음)
@@ -681,6 +772,14 @@ pub fn run() {
                         // OS가 윈도우를 숨겼을 수 있으므로 강제 표시 및 최상위 재적용
                         let _ = window_clone_evt.show();
                         let _ = window_clone_evt.set_always_on_top(true);
+                        // 윈도우 크기를 재설정하여 WebView 렌더링 표면 갱신 강제 트리거
+                        // (모니터 연결/해제 시 GPU 컨텍스트 손실로 인한 투명도 깨짐 복구)
+                        let _ = window_clone_evt.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                            width: LOGICAL_WIN_W,
+                            height: LOGICAL_WIN_H,
+                        }));
+                        // Thread 2에 렌더링 갱신 요청 (SetWindowPos + RedrawWindow)
+                        redraw_writer.store(true, Ordering::Relaxed);
                     }
                     prev_monitor_count = cur_monitor_count;
 
@@ -730,23 +829,30 @@ pub fn run() {
                         "up": up_bytes
                     }));
 
-                    // 배터리: 60초마다 폴링 (배터리 잔량은 느리게 변함, WMI 호출 비용 절감)
+                    // 배터리 잔량: 3분마다 폴링 (starship_battery WMI 호출 비용 절감)
                     if battery_tick == 0 {
                         if let Some(ref manager) = battery_manager {
                             if let Ok(mut batteries) = manager.batteries() {
                                 if let Some(Ok(bat)) = batteries.next() {
-                                    use starship_battery::State;
-                                    let percent = (bat.state_of_charge().get::<starship_battery::units::ratio::percent>()) as i32;
-                                    let charging = matches!(bat.state(), State::Charging | State::Full);
-                                    let _ = window_clone_evt.emit("battery-usage", serde_json::json!({
-                                        "percent": percent,
-                                        "charging": charging
-                                    }));
+                                    cached_battery_percent = (bat.state_of_charge().get::<starship_battery::units::ratio::percent>()) as i32;
                                 }
                             }
                         }
                     }
                     battery_tick = (battery_tick + 1) % 180;
+
+                    // 충전 상태: 매 폴링마다 확인 (GetSystemPowerStatus는 매우 가벼움)
+                    // 변경 시 또는 배터리 잔량 갱신 시에만 이벤트 발송
+                    if cached_battery_percent >= 0 {
+                        let charging = is_ac_connected();
+                        if charging != prev_charging || battery_tick == 1 {
+                            prev_charging = charging;
+                            let _ = window_clone_evt.emit("battery-usage", serde_json::json!({
+                                "percent": cached_battery_percent,
+                                "charging": charging
+                            }));
+                        }
+                    }
 
                     let interval = polling_ms_t1.load(Ordering::Relaxed);
                     std::thread::sleep(std::time::Duration::from_millis(interval));
@@ -762,6 +868,8 @@ pub fn run() {
             let test_cpu_t2 = Arc::clone(&test_cpu);
             let on_fs_reader = Arc::clone(&on_fullscreen_t2);
             let teleport_reader = Arc::clone(&teleport_x_t2);
+            let redraw_reader = Arc::clone(&needs_redraw_t2);
+            let speed_factor_reader = Arc::clone(&pet_speed_factor_t2);
 
             // Win32 HWND 캐시 (Thread 2에서 SetWindowPos 직접 호출용)
             #[cfg(target_os = "windows")]
@@ -790,9 +898,12 @@ pub fn run() {
 
                     // Thread 1로부터 텔레포트 요청 수신 (모니터 핫플러그 시)
                     let teleport_x = teleport_reader.load(Ordering::Relaxed);
+                    let mut needs_show = false; // 모니터 변경 후 윈도우 강제 표시 플래그
                     if teleport_x != i64::MIN {
                         current_x = teleport_x as f64;
                         teleport_reader.store(i64::MIN, Ordering::Relaxed);
+                        smooth_y_init = false; // Y 보간 초기화 (모니터 간 work_bottom 차이 대응)
+                        needs_show = true;
                     }
 
                     // 공유 메모리에서 읽기만 수행 (매우 빠름, lock 없음)
@@ -816,10 +927,8 @@ pub fn run() {
                     let mut speed_multiplier = 1.0 + (current_cpu as f64 / 25.0);
 
                     // IF hovered, stop movement completely
-                    if let Ok(hovered) = thread_hover_state.lock() {
-                        if *hovered {
-                            speed_multiplier = 0.0;
-                        }
+                    if thread_hover_state.load(Ordering::Relaxed) {
+                        speed_multiplier = 0.0;
                     }
 
                     // 전체 모니터 목록 기준으로 이동 (전체화면 모니터는 topmost 해제로 뒤에 숨김)
@@ -870,8 +979,9 @@ pub fn run() {
                                 max_x = 1920;
                             }
 
-                            // 이동 속도 계산 (현재 모니터 scale 반영)
-                            let movement = 35.0 * prev_scale * speed_multiplier * delta_time;
+                            // 이동 속도 계산 (현재 모니터 scale + 펫별 속도 배율 반영)
+                            let pet_factor = f32::from_bits(speed_factor_reader.load(Ordering::Relaxed)) as f64;
+                            let movement = 35.0 * prev_scale * speed_multiplier * pet_factor * delta_time;
                             current_x += movement;
                             // Thread 1의 전체화면 감지가 올바른 모니터를 알 수 있도록 공유
                             pet_x_writer.store(current_x as i64, Ordering::Relaxed);
@@ -881,6 +991,8 @@ pub fn run() {
                             // 2) 뼈다귀의 위치가 왼쪽 끝(전체 min_x)보다 작을 때 (좌측 모니터 뽑힘/미아 상태)
                             if current_x > max_x as f64 || current_x < (min_x as f64 - 200.0) {
                                 current_x = min_x as f64 - 100.0;
+                                smooth_y_init = false;
+                                needs_show = true;
                             }
 
                             // 모니터 미발견 시 (베젤 통과 중 등) 첫 번째 모니터 기준으로 보정
@@ -906,6 +1018,11 @@ pub fn run() {
 
                             // Win32 SetWindowPos로 위치 이동과 TOPMOST를 동시에 적용
                             // → 모니터 간 이동 시 다른 창 뒤로 숨는 문제 방지
+                            // Thread 1에서 모니터 변경 감지 시 렌더링 갱신 요청 수신
+                            let do_redraw = redraw_reader.compare_exchange(
+                                true, false, Ordering::Relaxed, Ordering::Relaxed
+                            ).is_ok();
+
                             #[cfg(target_os = "windows")]
                             {
                                 #[link(name = "user32")]
@@ -919,11 +1036,26 @@ pub fn run() {
                                         cy: i32,
                                         uFlags: u32,
                                     ) -> i32;
+                                    fn ShowWindow(hwnd: isize, nCmdShow: i32) -> i32;
+                                    fn RedrawWindow(
+                                        hwnd: isize,
+                                        lprcUpdate: *const u8,
+                                        hrgnUpdate: isize,
+                                        flags: u32,
+                                    ) -> i32;
                                 }
                                 const HWND_TOPMOST: isize = -1;
                                 const HWND_NOTOPMOST: isize = -2;
                                 const SWP_NOSIZE: u32 = 0x0001;
                                 const SWP_NOACTIVATE: u32 = 0x0010;
+                                const SWP_FRAMECHANGED: u32 = 0x0020;
+                                const SW_SHOWNA: i32 = 8; // 활성화 없이 표시
+                                // RedrawWindow 플래그
+                                const RDW_INVALIDATE: u32 = 0x0001;
+                                const RDW_ERASE: u32 = 0x0004;
+                                const RDW_ALLCHILDREN: u32 = 0x0080;
+                                const RDW_UPDATENOW: u32 = 0x0100;
+                                const RDW_FRAME: u32 = 0x0400;
 
                                 let insert_after = if on_fs_reader.load(Ordering::Relaxed) {
                                     HWND_NOTOPMOST
@@ -933,15 +1065,43 @@ pub fn run() {
 
                                 if cached_hwnd != 0 {
                                     unsafe {
-                                        SetWindowPos(
-                                            cached_hwnd,
-                                            insert_after,
-                                            current_x as i32,
-                                            target_y,
-                                            0,
-                                            0,
-                                            SWP_NOSIZE | SWP_NOACTIVATE,
-                                        );
+                                        if do_redraw {
+                                            // 모니터 변경: 크기 포함 SetWindowPos + SWP_FRAMECHANGED로
+                                            // 프레임 속성 재적용 (투명도/DPI 갱신 트리거)
+                                            SetWindowPos(
+                                                cached_hwnd,
+                                                insert_after,
+                                                current_x as i32,
+                                                target_y,
+                                                actual_win_h, // 물리 높이를 cx에 전달하지 않고 아래에서 재계산
+                                                0,
+                                                SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                                            );
+                                            // 렌더링 표면 전체 강제 갱신 (WebView + 자식 윈도우 포함)
+                                            RedrawWindow(
+                                                cached_hwnd,
+                                                std::ptr::null(),
+                                                0,
+                                                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME,
+                                            );
+                                            // 높이 캐시 무효화 (DPI 변경 대응)
+                                            cached_scale_for_h = -1.0;
+                                        } else {
+                                            SetWindowPos(
+                                                cached_hwnd,
+                                                insert_after,
+                                                current_x as i32,
+                                                target_y,
+                                                0,
+                                                0,
+                                                SWP_NOSIZE | SWP_NOACTIVATE,
+                                            );
+                                        }
+                                        // 모니터 제거 시 OS가 윈도우를 숨길 수 있음
+                                        // → 유효 좌표 이동 직후 동기적으로 강제 표시
+                                        if needs_show || do_redraw {
+                                            ShowWindow(cached_hwnd, SW_SHOWNA);
+                                        }
                                     }
                                 }
                             }
@@ -962,10 +1122,15 @@ pub fn run() {
             show_main_window,
             set_hover,
             set_test_cpu,
+            update_pet_type,
+            update_pet_scale,
+            update_pet_speed,
             update_pet_color,
             update_monitor_config,
             set_polling_interval,
+            update_mouse_enabled,
             update_bubble_enabled,
+            update_bubble_height,
             update_alarm_list,
             update_display_config,
             update_messages,

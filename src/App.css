@@ -32,8 +32,6 @@ body,
 /* Idle 상태 말풍선: 캐릭터 위에 표시 (투명 배경 + 아웃라인) */
 .speech-bubble {
   position: absolute;
-  bottom: 52px;
-  /* 캐릭터(48px) 바닥 기준 위치 */
   left: 50%;
   transform: translateX(-50%);
   /* 가로폭 확대에 맞춰 중앙 정렬 */
@@ -78,6 +76,13 @@ body,
   display: flex;
   flex-direction: column;
   padding: 16px 0;
+}
+
+.sidebar-version {
+  margin-top: auto;
+  padding: 12px 16px;
+  font-size: 11px;
+  color: #666;
 }
 
 .sidebar-title {
@@ -214,6 +219,14 @@ body,
   accent-color: #54a0ff;
 }
 
+/* 펫 선택 행 */
+.pet-select-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 .color-controls {
   display: flex;
   flex-direction: column;
@@ -272,7 +285,6 @@ body,
 
 /* 이동 중 메시지 말풍선: 창(200px) 안에서 줄바꿈 */
 .message-bubble {
-  bottom: 48px;
   white-space: normal !important;
   text-align: center;
   width: 200px;
@@ -356,6 +368,12 @@ body,
 .setting-label {
   font-size: 14px;
   color: #f1f1f1;
+}
+
+.setting-description {
+  font-size: 12px;
+  color: #888;
+  margin: 4px 0 0 0;
 }
 
 .polling-control {
@@ -610,45 +628,15 @@ body,
 
   /* 기존에 있던 제자리 뛰기 애니메이션(run-sprite)은 App.tsx에서 Web Animations API로 직접 제어하므로 삭제 */
 
-  /* 스켈레톤의 기본 방향이 왼쪽이므로, 오른쪽으로 이동하는 윈도우에 맞추어 반전(Flip) 시킴 */
-  /* filter와 함께 사용할 때 transform이 틀어지지 않도록 최상단에 배치 */
-  transform: scaleX(-1);
+  /* 좌우 반전은 펫별로 JS에서 inline style로 제어 (flipX) */
   image-rendering: pixelated;
   /* 도트 그래픽 선명도 유지 */
 }
 
 /* 마우스 호버 시 휴식(Idle) 모션으로 변경할 CSS 클래스 */
-.skeleton.idle {
-  background-image: url('./assets/idle.png');
-  animation: idle-sprite 1.2s steps(6) infinite !important;
-}
+/* idle/hurt 애니메이션은 모두 MainWindow.tsx에서 Web Animations API로 동적 제어 */
 
-/* 클릭 시 Hurt 모션: 2프레임(128px), 1회만 재생 */
-.skeleton.hurt {
-  background-image: url('./assets/Skeleton_Default_Hurt.png');
-  background-size: 128px 48px;
-  animation: hurt-sprite 0.4s steps(2, end) 1 forwards !important;
-}
-
-@keyframes idle-sprite {
-  from {
-    background-position: 0px 0px;
-  }
-
-  to {
-    background-position: -384px 0px;
-  }
-}
-
-@keyframes hurt-sprite {
-  from {
-    background-position: 0px 0px;
-  }
-
-  to {
-    background-position: -128px 0px;
-  }
-}
+/* hurt-sprite 애니메이션은 MainWindow.tsx에서 Web Animations API로 동적 처리 */
 
 /* 이모지 입력 래퍼: input + 토글 버튼을 한 줄로 배치 */
 .emoji-input-wrapper {
@@ -750,4 +738,39 @@ body,
 .export-import-buttons .polling-apply:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* 색상 팔레트를 포함하는 setting-item: 세로 배치 */
+.setting-item.color-setting {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* 폰트 색상 팔레트 */
+.font-color-palette {
+  display: grid;
+  grid-template-columns: repeat(10, 24px);
+  gap: 6px;
+}
+
+.font-color-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+  transition: transform 0.1s;
+}
+
+.font-color-swatch:hover {
+  transform: scale(1.15);
+}
+
+.font-color-swatch.selected {
+  border-color: #ff4757;
+  box-shadow: 0 0 0 2px #ff4757, inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+  transform: scale(1.15);
 }
