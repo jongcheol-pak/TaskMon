@@ -188,6 +188,10 @@ export default function MainWindow() {
     const savedSpeed = localStorage.getItem(`petSpeed_${petId}`);
     const userSpeed = savedSpeed ? Number(savedSpeed) / 100 : 1.0;
     invoke("update_pet_type", { petId: pet.id, speedFactor: pet.speedFactor, userSpeed });
+    // 저장된 펫 높이 오프셋을 Rust에 적용
+    const savedHeight = localStorage.getItem(`petHeight_${petId}`);
+    const heightOffset = savedHeight ? Number(savedHeight) : 0;
+    invoke("update_pet_height", { petId: pet.id, offset: heightOffset });
     // 저장된 이동 모드를 Rust에 적용
     const savedMode = localStorage.getItem('moveMode');
     if (savedMode !== null) {
@@ -558,11 +562,13 @@ export default function MainWindow() {
       setPetScale(savedScale ? Number(savedScale) : 100);
       const savedSpeed = localStorage.getItem(`petSpeed_${resolvedId}`);
       setPetUserSpeed(savedSpeed ? Number(savedSpeed) : 100);
-      // 'random' 해결 후 실제 펫의 속도를 Rust에 적용 (update_pet_speed 경유, 재귀 방지)
+      // 'random' 해결 후 실제 펫의 속도/높이를 Rust에 적용
       if (isRandom) {
         const pet = getPetType(resolvedId);
         const userSpeed = savedSpeed ? Number(savedSpeed) / 100 : 1.0;
         invoke("update_pet_speed", { petId: resolvedId, speedFactor: pet.speedFactor, userSpeed });
+        const savedH = localStorage.getItem(`petHeight_${resolvedId}`);
+        invoke("update_pet_height", { petId: resolvedId, offset: savedH ? Number(savedH) : 0 });
       }
     });
     // 펫 크기 동기화 (설정 윈도우 → 메인 윈도우)
@@ -574,6 +580,10 @@ export default function MainWindow() {
     const unlistenPetSpeed = listen<{petId: string, userSpeed: number}>("pet-speed-update", (event) => {
       localStorage.setItem(`petSpeed_${event.payload.petId}`, String(Math.round(event.payload.userSpeed * 100)));
       setPetUserSpeed(Math.round(event.payload.userSpeed * 100));
+    });
+    // 펫 높이 오프셋 동기화 (설정 윈도우 → 메인 윈도우)
+    const unlistenPetHeight = listen<{petId: string, offset: number}>("pet-height-update", (event) => {
+      localStorage.setItem(`petHeight_${event.payload.petId}`, String(event.payload.offset));
     });
     // 등반 이동 phase 변경 수신
     const unlistenMovePhase = listen<number>("move-phase", (event) => {
@@ -610,6 +620,7 @@ export default function MainWindow() {
       unlistenPetType.then((f) => f());
       unlistenPetScale.then((f) => f());
       unlistenPetSpeed.then((f) => f());
+      unlistenPetHeight.then((f) => f());
       unlistenMovePhase.then((f) => f());
       unlistenMoveMode.then((f) => f());
       unlistenMoveDir.then((f) => f());
@@ -819,7 +830,7 @@ export default function MainWindow() {
     && !(displayConfig.notificationPriority && showNotification);
 
   // 왼쪽 이동 모드 여부 (mode 2=기본 왼쪽, mode 3=등반 왼쪽, mode 4=랜덤 동적)
-  const isLeftMode = moveMode === 4 ? randomDirLeft : moveMode >= 2;
+  const isLeftMode = (moveMode === 4 || moveMode === 5) ? randomDirLeft : moveMode >= 2;
 
   return (
     <div className="pet-container" style={(() => {

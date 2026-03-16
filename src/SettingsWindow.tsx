@@ -55,6 +55,12 @@ export default function SettingsWindow() {
     const saved = localStorage.getItem(`petSpeed_${id}`);
     return saved ? Number(saved) : 100;
   });
+  // 펫 높이 오프셋 (펫별 개별 저장, -10~10, 기본 0)
+  const [petHeight, setPetHeight] = useState<number>(() => {
+    const id = localStorage.getItem('selectedPetId') || RANDOM_PET_ID;
+    const saved = localStorage.getItem(`petHeight_${id}`);
+    return saved ? Number(saved) : 0;
+  });
 
   // 색상 필터 상태 (Hue: 0~360, Saturation: 0~200, Brightness: 0~200)
   const [hue, setHue] = useState<number>(() => {
@@ -708,6 +714,10 @@ export default function SettingsWindow() {
                   const savedSpeed = localStorage.getItem(`petSpeed_${id}`);
                   const speed = savedSpeed ? Number(savedSpeed) : 100;
                   setPetSpeed(speed);
+                  const savedHeight = localStorage.getItem(`petHeight_${id}`);
+                  const height = savedHeight ? Number(savedHeight) : 0;
+                  setPetHeight(height);
+                  invoke("update_pet_height", { petId: id, offset: height });
                   invoke("update_pet_type", { petId: id, speedFactor: pet?.speedFactor ?? 1.0, userSpeed: speed / 100 });
                 }}
               >
@@ -752,6 +762,23 @@ export default function SettingsWindow() {
                 style={{ flex: 1 }}
               />
               <span style={{ minWidth: '40px', textAlign: 'right', fontSize: '13px', color: '#ccc' }}>{petSpeed}%</span>
+            </div>
+            <div className="setting-item" style={{ marginTop: '8px' }}>
+              <span className="setting-label">{t('pet.height')}</span>
+              <input
+                type="range"
+                min={-10}
+                max={10}
+                value={petHeight}
+                onChange={(e) => {
+                  const height = Number(e.target.value);
+                  setPetHeight(height);
+                  localStorage.setItem(`petHeight_${selectedPetId}`, String(height));
+                  invoke("update_pet_height", { petId: selectedPetId, offset: height });
+                }}
+                style={{ flex: 1 }}
+              />
+              <span style={{ minWidth: '40px', textAlign: 'right', fontSize: '13px', color: '#ccc' }}>{petHeight}</span>
             </div>
           </div>
 
@@ -1087,10 +1114,10 @@ export default function SettingsWindow() {
                     <div key={index} className="alarm-item">
                       <div className="alarm-item-info">
                         <span className="alarm-type-badge">
-                          {msg.target === 'cpu' ? 'CPU' :
-                           msg.target === 'memory' ? 'MEM' :
-                           msg.target === 'battery' ? 'BAT' :
-                           msg.target === 'network_down' ? 'NET↓' : 'NET↑'}
+                          {msg.target === 'cpu' ? t('msg.badgeCpu') :
+                           msg.target === 'memory' ? t('msg.badgeMemory') :
+                           msg.target === 'battery' ? t('msg.badgeBattery') :
+                           msg.target === 'network_down' ? t('msg.badgeNetDown') : t('msg.badgeNetUp')}
                         </span>
                         <span className="alarm-detail">
                           {msg.condition === 'greater_than' ? '>' :

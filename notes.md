@@ -1,6 +1,14 @@
 # 프로젝트 진행 기록 (Notes)
 
 ## 최근 변경
+- 2026-03-16: '기본 이동 (반복)' 모드 추가 (mode 5) — 오른쪽→왼쪽→오른쪽 반복 이동. 모니터 끝 도달 시 워프 대신 방향 전환. `random_dir_left`로 동적 방향 관리, `move-direction` 이벤트로 프론트엔드 scaleX 동기화.
+- 2026-03-16: 랜덤 모드 모니터 건너가기 순간이동 수정 — Phase 3 하단/Phase 1 상단에서 건너간 후 직접 Phase 1/3으로 전환하면 먼 벽까지 순간이동하는 문제. Phase 0/2(하단/상단 이동)로 변경하여 진입 경계에서 출발 → 자연스럽게 걸어서 먼 벽에 도달 → 경계 판정에서 등반/하강으로 자동 전환.
+- 2026-03-16: 캐릭터 외 빈 영역 클릭 투과 기능 추가 — 200px 윈도우에서 캐릭터 스프라이트 외 투명 영역 클릭 시 뒤쪽 바탕화면/앱으로 클릭이 통과됨. Rust Thread 2에서 `GetCursorPos`로 커서 위치를 매 프레임 확인, `pet_visual_w` 기반 캐릭터 영역 판정 후 `set_ignore_cursor_events` 토글. 상태 변경 시에만 호출하여 성능 영향 최소화.
+- 2026-03-16: 랜덤 모드 하강 완료 후 방향/좌우반전 수정 — Phase 3 하강 완료 시 `random_dir_left = !is_left`로 방향을 뒤집어 캐릭터가 같은 벽 재등반하거나 이웃 모니터에서 잘못된 방향으로 이동하던 문제 해결. (1) `!crossed_at_bottom`: `had_neighbor` 분기 제거, 항상 `random_dir_left = is_left`로 방향 유지하여 하강 벽 반대쪽(모니터 내부)으로 이동, (2) crossed→Phase 0: `random_dir_left = is_left`로 방향 유지 + 위치를 이웃 모니터 먼 쪽에서 출발하도록 swap하여 진입 경계 방향으로 이동. 디버그 console.log 제거.
+- 2026-03-16: 펫 높이 오프셋 기능 추가 — 펫 메뉴에 "펫 높이" 슬라이더(-10~10, 기본 0) 추가. 양수=표면에서 멀어짐, 음수=표면으로 가까워짐. 펫별 개별 설정 유지(localStorage). DPI 스케일 적용하여 물리 픽셀 단위로 오프셋 반영. 모든 Phase에 적용: Phase 0(하단 Y), Phase 1(등반 벽면 X), Phase 2(상단 Y), Phase 3(하강 벽면 X), 전환 시점 및 모니터 간 이동 포함.
+- 2026-03-16: 랜덤 모드(mode 4) 좌우반전 미적용 수정 — Thread 2의 초기 `move-direction` 이벤트가 프론트엔드 리스너 등록 전에 발행되어 유실되는 문제. `randomDirLeft`가 초기값 `false`에 고정되어 실제 방향(`random_dir_left=true`)과 불일치. 싱글 모니터에서는 방향이 변경되지 않아 자체 복구 불가. (1) 초기 3초간 0.5초마다 방향 재발행으로 유실 복구, (2) Phase 변경 시 방향도 함께 재발행하여 동기화 보장, (3) 비랜덤→랜덤 모드 전환 시 동기화 카운터 리셋.
+- 2026-03-16: 배터리 폴링 주기 변경 — 기존 tick 카운터 → `battery_elapsed_ms` 경과 시간 기반으로 변경. 최소 3분 간격, 폴링 간격이 3분 이상이면 폴링 간격으로 자동 확장. 첫 폴링은 ~2초 후 트리거.
+- 2026-03-16: 듀얼 모니터(다른 DPI) 모니터 경계·작업표시줄 위치 오류 수정 — (1) `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 호출 추가로 Win32 API 좌표 가상화 방지, (2) Tauri `available_monitors()` + `MonitorFromPoint` 조합을 Win32 `EnumDisplayMonitors` + `GetMonitorInfoW` + `GetDpiForMonitor` 직접 수집으로 교체하여 SetWindowPos와 동일 좌표 공간 보장, (3) DPI 스케일 팩터를 Tauri `scale_factor()` 대신 Win32 `GetDpiForMonitor(MDT_EFFECTIVE_DPI)`로 취득, (4) `actual_win_h`를 `outer_size()`(이전 모니터 DPI 기준) 대신 대상 모니터의 `scale_factor`로 직접 계산하고, 모니터 탐색→높이 계산→Y 계산 순서로 재구성하여 DPI가 다른 모니터에서 Y 위치가 틀어지는 문제 해결.
 - 2026-03-15: 등반/하강 위치 오류 수정 — 모니터 좌표(x, y, width, height)를 Tauri API 대신 Win32 GetMonitorInfoW에서 직접 취득하여 SetWindowPos와 동일 좌표 공간(물리 픽셀) 보장. DPI 스케일링 시 Tauri가 반환하는 좌표와 SetWindowPos 좌표의 불일치로 등반 위치가 화면 중간에 표시되던 문제 해결. pet_visual_w도 CSS→물리 픽셀 변환(×prev_scale) 추가.
 - 2026-03-15: 전체화면 감지 하이브리드 방식으로 수정 — SHQueryUserNotificationState O(1) 프리체크 + true일 때만 EnumWindows로 펫이 있는 모니터의 전체화면 여부 확인. 기존 시스템 전체 감지(모든 모니터 NOTOPMOST)로 인한 등반/하강 표시 오류 해결. 평상시 EnumWindows 호출 제거, 전체화면 앱 존재 시에만 per-monitor 판정.
 - 2026-03-15: available_monitors() IPC 호출 빈도 감소 — 모니터 정보 갱신을 매 1초 → 10초 간격으로 변경. IPC 왕복 + get_work_area_for_monitor Win32 API 호출 90% 감소. 전체화면 감지(EnumWindows)는 매 폴링 유지.

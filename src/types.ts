@@ -396,6 +396,7 @@ export interface MoveMode {
 export const MOVE_MODES: MoveMode[] = [
   { id: 0, nameKey: 'movement.basicRight', descriptionKey: 'movement.basicRightDesc' },
   { id: 2, nameKey: 'movement.basicLeft', descriptionKey: 'movement.basicLeftDesc' },
+  { id: 5, nameKey: 'movement.basicBounce', descriptionKey: 'movement.basicBounceDesc' },
   { id: 1, nameKey: 'movement.climbRight', descriptionKey: 'movement.climbRightDesc' },
   { id: 3, nameKey: 'movement.climbLeft', descriptionKey: 'movement.climbLeftDesc' },
   { id: 4, nameKey: 'movement.random', descriptionKey: 'movement.randomDesc' },
