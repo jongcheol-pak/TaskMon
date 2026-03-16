@@ -1329,25 +1329,11 @@ pub fn run() {
                                                         // 인접 모니터로 건너가기
                                                         let neighbor = if is_left { sorted[idx - 1] } else { sorted[idx + 1] };
                                                         prev_scale = neighbor.scale_factor;
-                                                        // 건너간 모니터에서 상단 이동 또는 하강 랜덤 결정
-                                                        if rng.gen_bool(0.5) {
-                                                            // 상단 이동 (Phase 2)
-                                                            // 건너간 후 방향 반전: 진입 쪽에서 출발하여 반대쪽으로 이동
-                                                            random_dir_left = !is_left;
-                                                            // is_left=true → 좌측 이웃으로 건너감 → 우측 끝에서 출발 → 좌측으로 이동
-                                                            // is_left=false → 우측 이웃으로 건너감 → 좌측 끝에서 출발 → 우측으로 이동
-                                                            if is_left {
-                                                                current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
-                                                            } else {
-                                                                current_x = neighbor.x as f64 - margin;
-                                                            }
-                                                            current_y = neighbor.y as f64 + height_px as f64;
-                                                            move_phase = 2;
-                                                        } else {
-                                                            // 상단 이동 (Phase 2) — 방향 전환 후 진입 경계에서 출발하여 먼 벽까지 이동
-                                                            // (먼 벽에 도달하면 Phase 2 경계 판정에서 자연스럽게 하강 전환)
-                                                            // is_left=true → 좌측 이웃 진입 → 우측(진입 경계)에서 출발 → 좌측으로 이동
-                                                            // is_left=false → 우측 이웃 진입 → 좌측(진입 경계)에서 출발 → 우측으로 이동
+                                                        // 상단 이동 (Phase 2) — 진입 경계에서 출발, 방향 전환하여 먼 벽까지 이동
+                                                        // (먼 벽에 도달하면 Phase 2 경계 판정에서 자연스럽게 하강 전환)
+                                                        // is_left=true → 좌측 이웃 진입 → 우측(진입 경계)에서 출발 → 좌측으로 이동
+                                                        // is_left=false → 우측 이웃 진입 → 좌측(진입 경계)에서 출발 → 우측으로 이동
+                                                        {
                                                             random_dir_left = !is_left;
                                                             if is_left {
                                                                 current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
@@ -1476,26 +1462,11 @@ pub fn run() {
                                                         // 인접 모니터로 건너가기
                                                         let neighbor = if is_left { sorted[idx + 1] } else { sorted[idx - 1] };
                                                         prev_scale = neighbor.scale_factor;
-                                                        // 건너간 모니터에서 하단 이동 또는 등반 랜덤 결정
-                                                        if rng.gen_bool(0.5) {
-                                                            // 하단 이동 (Phase 0)
-                                                            // 방향 유지 + 진입 경계의 먼 쪽에서 출발하여 진입 경계 방향으로 이동
-                                                            // is_left=true → 우측 이웃으로 건너감 → 우측 끝에서 출발 → 좌측(진입 경계)으로 이동
-                                                            // is_left=false → 좌측 이웃으로 건너감 → 좌측 끝에서 출발 → 우측(진입 경계)으로 이동
-                                                            if is_left {
-                                                                current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
-                                                            } else {
-                                                                current_x = neighbor.x as f64 - margin;
-                                                            }
-                                                            smooth_y = (neighbor.work_bottom - actual_win_h - height_px) as f64;
-                                                            smooth_y_init = true;
-                                                            move_phase = 0;
-                                                            random_dir_left = is_left; // 방향 유지
-                                                        } else {
-                                                            // 하단 이동 (Phase 0) — 방향 전환 후 진입 경계에서 출발하여 먼 벽까지 이동
-                                                            // (먼 벽에 도달하면 Phase 0 경계 판정에서 자연스럽게 등반 전환)
-                                                            // is_left=true → 우측 이웃 진입 → 좌측(진입 경계)에서 출발 → 우측으로 이동
-                                                            // is_left=false → 좌측 이웃 진입 → 우측(진입 경계)에서 출발 → 좌측으로 이동
+                                                        // 하단 이동 (Phase 0) — 진입 경계에서 출발, 방향 전환하여 먼 벽까지 이동
+                                                        // (먼 벽에 도달하면 Phase 0 경계 판정에서 자연스럽게 등반 전환)
+                                                        // is_left=true → 우측 이웃 진입 → 좌측(진입 경계)에서 출발 → 우측으로 이동
+                                                        // is_left=false → 좌측 이웃 진입 → 우측(진입 경계)에서 출발 → 좌측으로 이동
+                                                        {
                                                             random_dir_left = !is_left;
                                                             if is_left {
                                                                 current_x = neighbor.x as f64 - margin;
