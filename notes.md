@@ -1,6 +1,8 @@
 # 프로젝트 진행 기록 (Notes)
 
 ## 최근 변경
+- 2026-03-17: 마우스 사용 비활성 시 캐릭터 윈도우 클릭 투과 — `AppState`에 `mouse_enabled` 필드 추가. `update_mouse_enabled` 커맨드에서 AtomicBool로 상태 저장, Thread 2 히트테스트 루프에서 `mouse_enabled`가 false이면 `cursor_on_pet`을 항상 false로 처리하여 `set_ignore_cursor_events(true)` 유지. 캐릭터 클릭 시 아래쪽 바탕화면/앱으로 클릭 통과.
+- 2026-03-17: 사람(3) 펫 추가 — 64x95px 스프라이트. Idle(8프레임)/Walk(10프레임)/Run(8프레임) 적용. Hurt 이미지는 Idle 공용. 우클릭으로 Walk↔Run 이동 이미지 토글(hasVariants: true). flipX: true(원본 왼쪽 향함).
 - 2026-03-16: '기본 이동 (반복)' 모드 추가 (mode 5) — 오른쪽→왼쪽→오른쪽 반복 이동. 모니터 끝 도달 시 워프 대신 방향 전환. `random_dir_left`로 동적 방향 관리, `move-direction` 이벤트로 프론트엔드 scaleX 동기화.
 - 2026-03-16: 랜덤 모드 모니터 건너가기 순간이동 수정 — Phase 3 하단/Phase 1 상단에서 건너간 후 직접 Phase 1/3으로 전환하면 먼 벽까지 순간이동하는 문제. Phase 0/2(하단/상단 이동)로 변경하여 진입 경계에서 출발 → 자연스럽게 걸어서 먼 벽에 도달 → 경계 판정에서 등반/하강으로 자동 전환.
 - 2026-03-16: 캐릭터 외 빈 영역 클릭 투과 기능 추가 — 200px 윈도우에서 캐릭터 스프라이트 외 투명 영역 클릭 시 뒤쪽 바탕화면/앱으로 클릭이 통과됨. Rust Thread 2에서 `GetCursorPos`로 커서 위치를 매 프레임 확인, `pet_visual_w` 기반 캐릭터 영역 판정 후 `set_ignore_cursor_events` 토글. 상태 변경 시에만 호출하여 성능 영향 최소화.

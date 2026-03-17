@@ -75,6 +75,10 @@ import human1Dash from './assets/Human1_Dash.png';
 import human2Run from './assets/Human2_Run.png';
 import human2Idle from './assets/Human2_Idle.png';
 import human2Hurt from './assets/Human2_Hurt.png';
+// 사람(3) 스프라이트
+import human3Walk from './assets/Human3_Walk.png';
+import human3Idle from './assets/Human3_Idle.png';
+import human3Run from './assets/Human3_Run.png';
 // 자동차(1) 스프라이트
 import car1Run from './assets/Car1_Run.png';
 import car1Hurt from './assets/Car1_Hurt.png';
@@ -363,6 +367,23 @@ export const PET_TYPES: PetType[] = [
     frameHeight: 30,
     bottomPadding: 0,
     hasVariants: false,
+    flipX: false,
+    speedFactor: 1.0,
+    displayScale: 1.0,
+  },
+  {
+    id: 'human3',
+    name: '사람(3)',
+    runImages: [human3Walk, human3Run],
+    idleImages: [human3Idle, human3Idle],
+    hurtImage: human3Idle,
+    hurtFrames: 0,
+    idleFrames: [8, 8],
+    runFrames: [10, 8],
+    frameWidth: 64,
+    frameHeight: 95,
+    bottomPadding: 0,
+    hasVariants: true,
     flipX: false,
     speedFactor: 1.0,
     displayScale: 1.0,

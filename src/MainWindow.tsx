@@ -703,7 +703,7 @@ export default function MainWindow() {
 
   // 좌클릭: hurt 애니메이션 1회 재생 (idle 상태에서만)
   const handleClick = () => {
-    if (isHurt || isRightClickAnim || !isHovered) return;
+    if (isHurt || isRightClickAnim || !isHovered || currentPet.hurtFrames === 0) return;
     if (hurtTimerRef.current) clearTimeout(hurtTimerRef.current);
     setIsHurt(true);
     const frames = currentPet.hurtFrames;

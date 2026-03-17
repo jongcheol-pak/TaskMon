@@ -41,6 +41,7 @@ const ko = {
   'pet.monster6': '몬스터(6)',
   'pet.human1': '사람(1)',
   'pet.human2': '사람(2)',
+  'pet.human3': '사람(3)',
   'pet.random': '아무거나',
   'pet.car1': '자동차(1)',
 
@@ -233,6 +234,7 @@ const en: Record<string, string> = {
   'pet.monster6': 'Monster (6)',
   'pet.human1': 'Human (1)',
   'pet.human2': 'Human (2)',
+  'pet.human3': 'Human (3)',
   'pet.random': 'Random',
   'pet.car1': 'Car (1)',
 

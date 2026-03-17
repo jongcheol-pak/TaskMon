@@ -352,6 +352,8 @@ struct AppState {
     pet_visual_w: Arc<AtomicI32>,
     /// 펫 높이 오프셋 (-10~10, 양수=위, 음수=아래)
     pet_height_offset: Arc<AtomicI32>,
+    /// 마우스 사용 여부 (false이면 캐릭터 윈도우 클릭 투과)
+    mouse_enabled: Arc<AtomicBool>,
 }
 
 /// 펫 스프라이트의 실제 렌더링 너비 갱신 (CSS px 단위)
@@ -480,7 +482,8 @@ fn update_display_config(app: AppHandle, show_monitoring: bool, show_notificatio
 }
 
 #[tauri::command]
-fn update_mouse_enabled(app: AppHandle, enabled: bool) {
+fn update_mouse_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) {
+    state.mouse_enabled.store(enabled, Ordering::Relaxed);
     let _ = app.emit("mouse-enabled-update", enabled);
 }
 
@@ -680,6 +683,10 @@ pub fn run() {
     let shared_pet_height_offset = Arc::new(AtomicI32::new(0));
     let pet_height_offset_t2 = Arc::clone(&shared_pet_height_offset);
 
+    // 마우스 사용 여부 (기본 true, 설정에서 변경 시 반영)
+    let shared_mouse_enabled = Arc::new(AtomicBool::new(true));
+    let mouse_enabled_t2 = Arc::clone(&shared_mouse_enabled);
+
     tauri::Builder::default()
         .manage(AppState {
             is_hovered: app_state_hover,
@@ -689,6 +696,7 @@ pub fn run() {
             move_mode: Arc::clone(&shared_move_mode),
             pet_visual_w: Arc::clone(&shared_pet_visual_w),
             pet_height_offset: Arc::clone(&shared_pet_height_offset),
+            mouse_enabled: Arc::clone(&shared_mouse_enabled),
         })
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
             // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
@@ -1720,10 +1728,14 @@ pub fn run() {
 
                                 // 커서가 캐릭터 영역 위에 있는지 판단하여 클릭 투과 토글
                                 // 캐릭터 외 빈 영역은 클릭이 뒤쪽 윈도우/바탕화면으로 통과
+                                // 마우스 사용 비활성 시 항상 클릭 투과
                                 unsafe {
                                     let mut pt: [i32; 2] = [0, 0];
                                     if GetCursorPos(&mut pt) != 0 {
-                                        let cursor_on_pet = if move_phase != 0 {
+                                        let cursor_on_pet = if !mouse_enabled_t2.load(Ordering::Relaxed) {
+                                            // 마우스 사용 꺼짐 → 항상 클릭 투과
+                                            false
+                                        } else if move_phase != 0 {
                                             // Phase 1/2/3: CSS rotate로 캐릭터 위치 변동 → 윈도우 전체를 히트 영역
                                             pt[0] >= target_x && pt[0] <= target_x + cached_win_w
                                                 && pt[1] >= target_y && pt[1] <= target_y + cached_win_h
