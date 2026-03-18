@@ -189,6 +189,16 @@ const ko = {
   'general.langEn': 'English',
   'general.fontDefault': '기본',
 
+  // 타이머
+  'sidebar.timer': '타이머',
+  'timer.title': '타이머',
+  'timer.description': '타이머 시간을 설정하고 시작 버튼을 눌러주세요.',
+  'timer.minutes': '분',
+  'timer.start': '시작',
+  'timer.stop': '중지',
+  'timer.fontSize': '폰트 크기',
+  'timer.notice': '타이머가 진행 중에는 모든 알림, 모니터링 메시지가 표시되지 않습니다.',
+
   // 저장/가져오기
   'export.save': '저장',
   'export.import': '가져오기',
@@ -381,6 +391,16 @@ const en: Record<string, string> = {
   'general.langKo': '한국어',
   'general.langEn': 'English',
   'general.fontDefault': 'Default',
+
+  // 타이머
+  'sidebar.timer': 'Timer',
+  'timer.title': 'Timer',
+  'timer.description': 'Set the timer duration and press start.',
+  'timer.minutes': 'min',
+  'timer.start': 'Start',
+  'timer.stop': 'Stop',
+  'timer.fontSize': 'Font Size',
+  'timer.notice': 'All notifications and monitoring messages will be hidden while the timer is running.',
 
   // 저장/가져오기
   'export.save': 'Save',

@@ -1,6 +1,9 @@
 # 프로젝트 진행 기록 (Notes)
 
 ## 최근 변경
+- 2026-03-18: Rust 성능 최적화 4건 적용 — (1) MonitorInfo 구조체 필드 재배치(f64 선두 배치)로 패딩 4바이트 제거, (2) 전체화면 감지 zip 루프를 `.any()` 이터레이터로 변환(조기 종료 가능), (3) Thread 2 60fps 루프 내 3개 모니터 순회 루프를 단일 루프로 병합, (4) 등반 모드 매 프레임 `Vec<&MonitorInfo>` 힙 할당을 루프 외부 `Vec<usize>` 재사용으로 제거.
+- 2026-03-18: 타이머 폰트 크기 설정 추가 — 타이머 탭에 폰트 크기 콤보박스(10~20px, 기본 14px) 추가. Rust `update_timer_font_size` 커맨드 + `timer-font-size-update` 이벤트로 동기화.
+- 2026-03-18: 타이머 기능 추가 — 설정에 "타이머" 메뉴 탭 추가. 1~60분 슬라이더로 시간 설정, 시작/중지 버튼. 타이머 진행 중에는 캐릭터 위에 MM:SS 카운트다운 표시, 모든 알림/모니터링 메시지 숨김. idle 상태에서는 기존 모니터링 표시(타이머 숨김). Rust `update_timer_state` 커맨드 + `timer-state-update` 이벤트로 설정↔메인 윈도우 동기화.
 - 2026-03-17: 마우스 사용 비활성 시 캐릭터 윈도우 클릭 투과 — `AppState`에 `mouse_enabled` 필드 추가. `update_mouse_enabled` 커맨드에서 AtomicBool로 상태 저장, Thread 2 히트테스트 루프에서 `mouse_enabled`가 false이면 `cursor_on_pet`을 항상 false로 처리하여 `set_ignore_cursor_events(true)` 유지. 캐릭터 클릭 시 아래쪽 바탕화면/앱으로 클릭 통과.
 - 2026-03-17: 사람(3) 펫 추가 — 64x95px 스프라이트. Idle(8프레임)/Walk(10프레임)/Run(8프레임) 적용. Hurt 이미지는 Idle 공용. 우클릭으로 Walk↔Run 이동 이미지 토글(hasVariants: true). flipX: true(원본 왼쪽 향함).
 - 2026-03-16: '기본 이동 (반복)' 모드 추가 (mode 5) — 오른쪽→왼쪽→오른쪽 반복 이동. 모니터 끝 도달 시 워프 대신 방향 전환. `random_dir_left`로 동적 방향 관리, `move-direction` 이벤트로 프론트엔드 scaleX 동기화.

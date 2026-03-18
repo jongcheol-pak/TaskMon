@@ -151,6 +151,15 @@ export default function MainWindow() {
     return localStorage.getItem('alarmFontColor') || '#FFFFFF';
   });
 
+  // 타이머 상태
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerRemaining, setTimerRemaining] = useState<number>(0);
+  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [timerFontSize, setTimerFontSize] = useState<number>(() => {
+    const saved = localStorage.getItem('timerFontSize');
+    return saved ? Number(saved) : 14;
+  });
+
   // 등반 이동 phase (0=Bottom, 1=ClimbRight, 2=Top, 3=DescendLeft)
   const [movePhase, setMovePhase] = useState(0);
   // 이동 모드 (0=기본 오른쪽, 1=등반 오른쪽, 2=기본 왼쪽, 3=등반 왼쪽, 4=랜덤)
@@ -598,6 +607,35 @@ export default function MainWindow() {
     const unlistenMoveDir = listen<boolean>("move-direction", (event) => {
       setRandomDirLeft(event.payload);
     });
+    // 타이머 상태 동기화 (설정 윈도우 → 메인 윈도우)
+    const unlistenTimer = listen<{running: boolean, endAt: number}>("timer-state-update", (event) => {
+      const { running, endAt } = event.payload;
+      setTimerRunning(running);
+      if (running && endAt > 0) {
+        // 기존 인터벌 정리
+        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+        const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+        setTimerRemaining(remaining);
+        timerIntervalRef.current = setInterval(() => {
+          const r = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+          setTimerRemaining(r);
+          if (r <= 0) {
+            if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+            timerIntervalRef.current = null;
+            setTimerRunning(false);
+          }
+        }, 500);
+      } else {
+        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+        setTimerRemaining(0);
+      }
+    });
+    // 타이머 폰트 크기 동기화 (설정 윈도우 → 메인 윈도우)
+    const unlistenTimerFontSize = listen<number>("timer-font-size-update", (event) => {
+      setTimerFontSize(event.payload);
+      localStorage.setItem('timerFontSize', String(event.payload));
+    });
 
     return () => {
       unlisten.then((f) => f());
@@ -624,6 +662,8 @@ export default function MainWindow() {
       unlistenMovePhase.then((f) => f());
       unlistenMoveMode.then((f) => f());
       unlistenMoveDir.then((f) => f());
+      unlistenTimer.then((f) => f());
+      unlistenTimerFontSize.then((f) => f());
     };
   }, []);
 
@@ -649,6 +689,7 @@ export default function MainWindow() {
     return () => {
       if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
       if (rightClickTimerRef.current) clearTimeout(rightClickTimerRef.current);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     };
   }, []);
 
@@ -823,10 +864,16 @@ export default function MainWindow() {
   // Phase별 말풍선 표시 허용 여부 (Phase 1,3=좌우, Phase 2=상단, Phase 0=항상)
   const phaseBubbleAllowed = movePhase === 0 || (movePhase === 2 ? bubbleTop : bubbleSide);
 
-  // 말풍선 표시 여부 판정 (이동 중, not hovered, not hurt)
-  const showNotification = bubbleEnabled && phaseBubbleAllowed && displayConfig.showNotificationText && activeNotifications.length > 0;
+  // 타이머 진행 중 표시 여부
+  const showTimerDisplay = timerRunning && timerRemaining > 0;
+  const timerText = showTimerDisplay
+    ? `${String(Math.floor(timerRemaining / 60)).padStart(2, '0')}:${String(timerRemaining % 60).padStart(2, '0')}`
+    : '';
+
+  // 말풍선 표시 여부 판정 (타이머 진행 중에는 알림/모니터링 숨김)
+  const showNotification = !showTimerDisplay && bubbleEnabled && phaseBubbleAllowed && displayConfig.showNotificationText && activeNotifications.length > 0;
   // 알림 우선 모드: 알림 표시 중에는 모니터링 문구 숨김
-  const showMonitoring = bubbleEnabled && phaseBubbleAllowed && displayConfig.showMonitoringText && petMessage
+  const showMonitoring = !showTimerDisplay && bubbleEnabled && phaseBubbleAllowed && displayConfig.showMonitoringText && petMessage
     && !(displayConfig.notificationPriority && showNotification);
 
   // 왼쪽 이동 모드 여부 (mode 2=기본 왼쪽, mode 3=등반 왼쪽, mode 4=랜덤 동적)
@@ -842,6 +889,23 @@ export default function MainWindow() {
       if (isLeftMode) return { transform: 'scaleX(-1)' };
       return undefined;
     })()}>
+      {/* 이동(run) 중 타이머 표시: 타이머 진행 중에만 표시, idle에서는 숨김 */}
+      {!isHovered && !isHurt && showTimerDisplay && (
+        <div className="speech-bubble message-bubble" style={{
+          bottom: `${bubbleBottom}px`,
+          fontSize: `${timerFontSize}px`,
+          ...(fontFamily ? { fontFamily } : {}),
+          ...(() => {
+            const parts: string[] = ['translateX(-50%)'];
+            if (movePhase === 2) parts.push('rotate(180deg)');
+            if (isLeftMode) parts.push('scaleX(-1)');
+            if (parts.length > 1) return { transform: parts.join(' ') };
+            return {};
+          })(),
+        }}>
+          <div className="pet-message timer-text" style={{ color: monitoringFontColor, textShadow: monitoringShadow, fontVariantNumeric: 'tabular-nums' }}>{timerText}</div>
+        </div>
+      )}
       {/* 이동(run) 중 말풍선: 알림/모니터링 문구 표시 */}
       {!isHovered && !isHurt && (showNotification || showMonitoring) && (
         <div className="speech-bubble message-bubble" style={{

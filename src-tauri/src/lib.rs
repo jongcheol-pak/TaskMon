@@ -143,11 +143,11 @@ const LOGICAL_WIN_H: f64 = 200.0;
 
 #[derive(Clone, Default)]
 struct MonitorInfo {
+    scale_factor: f64, // f64를 먼저 배치하여 구조체 패딩 최소화
     x: i32,
     y: i32,
     width: i32,
     height: i32,
-    scale_factor: f64,
     work_bottom: i32, // 작업영역 하단 Y 절대좌표 (물리 픽셀) = 작업표시줄 상단
 }
 
@@ -505,6 +505,21 @@ fn update_bubble_top(app: AppHandle, enabled: bool) {
 #[tauri::command]
 fn update_bubble_height(app: AppHandle, height: u32) {
     let _ = app.emit("bubble-height-update", height);
+}
+
+/// 타이머 상태 동기화 (설정 → 메인 윈도우)
+#[tauri::command]
+fn update_timer_state(app: AppHandle, running: bool, end_at: f64) {
+    let _ = app.emit("timer-state-update", serde_json::json!({
+        "running": running,
+        "endAt": end_at
+    }));
+}
+
+/// 타이머 폰트 크기 동기화 (설정 → 메인 윈도우)
+#[tauri::command]
+fn update_timer_font_size(app: AppHandle, size: u32) {
+    let _ = app.emit("timer-font-size-update", size);
 }
 
 /// 폰트/언어 설정 동기화 (설정 → 메인 윈도우)
@@ -964,13 +979,9 @@ pub fn run() {
                             .unwrap_or((LOGICAL_WIN_W / 2.0) as i64);
                         let center_x = pet_x + half_w;
                         let fs_flags = check_fullscreen_all(&monitors_snapshot);
-                        let mut on_fs = false;
-                        for (m, &fs) in monitors_snapshot.iter().zip(fs_flags.iter()) {
-                            if center_x >= m.x as i64 && center_x < (m.x + m.width) as i64 && fs {
-                                on_fs = true;
-                            }
-                        }
-                        on_fs
+                        monitors_snapshot.iter().zip(fs_flags.iter()).any(|(m, &fs)| {
+                            center_x >= m.x as i64 && center_x < (m.x + m.width) as i64 && fs
+                        })
                     } else {
                         false
                     };
@@ -1091,6 +1102,7 @@ pub fn run() {
                 let mut prev_target_x: i32 = i32::MIN; // SetWindowPos 위치 변경 감지용
                 let mut prev_target_y: i32 = i32::MIN;
                 let mut prev_cursor_on_pet: bool = false; // 커서-펫 충돌 상태 (클릭 투과 토글용)
+                let mut sorted_indices: Vec<usize> = Vec::with_capacity(8); // 등반 모드용 정렬 인덱스 (재사용)
                 loop {
                     // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
                     if !is_running_t2.load(Ordering::Relaxed) {
@@ -1140,21 +1152,20 @@ pub fn run() {
                     // 전체 모니터 목록 기준으로 이동 (전체화면 모니터는 topmost 해제로 뒤에 숨김)
                     if let Ok(monitors) = all_monitors_reader.read() {
                         if !monitors.is_empty() {
-                            // --- 공통: 모니터 범위 및 DPI 캐시 ---
+                            // --- 공통: 모니터 범위, DPI 캐시, Y 위치를 단일 루프로 계산 ---
                             let mut max_x = i32::MIN;
                             let mut min_x = i32::MAX;
                             let mut raw_target_y = 0i32;
                             let mut found_monitor = false;
+                            let center_x = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
+                            let mut found_work_bottom = 0i32;
                             for m in monitors.iter() {
                                 if m.x < min_x { min_x = m.x; }
                                 if m.x + m.width > max_x { max_x = m.x + m.width; }
-                            }
-                            let center_x = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
-                            // 현재 모니터 탐색 → DPI 스케일 먼저 갱신
-                            for m in monitors.iter() {
                                 if center_x >= (m.x as f64) && center_x <= ((m.x + m.width) as f64) {
                                     prev_scale = m.scale_factor;
                                     found_monitor = true;
+                                    found_work_bottom = m.work_bottom;
                                 }
                             }
                             // 대상 모니터의 DPI로 윈도우 물리 크기 직접 계산
@@ -1170,10 +1181,8 @@ pub fn run() {
                             // 높이 오프셋: 양수=위로, 음수=아래로 (DPI 스케일 적용)
                             let height_offset = pet_height_reader.load(Ordering::Relaxed);
                             let height_px = (height_offset as f64 * prev_scale).round() as i32;
-                            for m in monitors.iter() {
-                                if center_x >= (m.x as f64) && center_x <= ((m.x + m.width) as f64) {
-                                    raw_target_y = m.work_bottom - actual_win_h - height_px;
-                                }
+                            if found_monitor {
+                                raw_target_y = found_work_bottom - actual_win_h - height_px;
                             }
                             if min_x == i32::MAX { min_x = 0; max_x = 1920; }
 
@@ -1195,9 +1204,10 @@ pub fn run() {
                                 // ========================================
                                 // 등반 이동 모드 (4-phase 상태 머신)
                                 // ========================================
-                                // 모니터를 X좌표로 정렬 (2-3개이므로 비용 무시)
-                                let mut sorted: Vec<&MonitorInfo> = monitors.iter().collect();
-                                sorted.sort_by_key(|m| m.x);
+                                // 모니터를 X좌표로 정렬 (인덱스 재사용으로 매 프레임 할당 방지)
+                                sorted_indices.clear();
+                                sorted_indices.extend(0..monitors.len());
+                                sorted_indices.sort_by_key(|&i| monitors[i].x);
 
                                 // 펫 스프라이트 실제 폭 (프론트엔드 CSS 픽셀 → 물리 픽셀 변환)
                                 let pet_w = pet_visual_w_reader.load(Ordering::Relaxed) as f64 * prev_scale;
@@ -1211,12 +1221,12 @@ pub fn run() {
 
                                         // 현재 모니터 경계 도달 감지
                                         let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
-                                        let cur_idx = sorted.iter().position(|m| {
+                                        let cur_idx = sorted_indices.iter().position(|&si| { let m = &monitors[si];
                                             center >= m.x as f64 && center <= (m.x + m.width) as f64
                                         });
 
                                         if let Some(idx) = cur_idx {
-                                            let mon = sorted[idx];
+                                            let mon = &monitors[sorted_indices[idx]];
                                             prev_scale = mon.scale_factor;
                                             raw_target_y = mon.work_bottom - actual_win_h - height_px;
 
@@ -1233,7 +1243,7 @@ pub fn run() {
 
                                             if at_edge {
                                                 // 인접 모니터 존재 여부 (이동 방향 기준)
-                                                let has_neighbor = if is_left { idx > 0 } else { idx + 1 < sorted.len() };
+                                                let has_neighbor = if is_left { idx > 0 } else { idx + 1 < sorted_indices.len() };
                                                 let should_climb = if !has_neighbor {
                                                     true // 끝 모니터 → 무조건 등반
                                                 } else if !is_random && consecutive_climbs >= 2 {
@@ -1261,7 +1271,7 @@ pub fn run() {
                                                     consecutive_climbs += 1;
                                                 } else {
                                                     // 인접 모니터 하단으로 건너가기
-                                                    let neighbor = if is_left { sorted[idx - 1] } else { sorted[idx + 1] };
+                                                    let neighbor = if is_left { &monitors[sorted_indices[idx - 1]] } else { &monitors[sorted_indices[idx + 1]] };
                                                     if is_left {
                                                         // 왼쪽: 이전 모니터 우측 끝에서 시작
                                                         current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
@@ -1295,7 +1305,7 @@ pub fn run() {
 
                                         // Fallback Y
                                         if !found_monitor {
-                                            if let Some(pm) = sorted.first() {
+                                            if let Some(&si) = sorted_indices.first() { let pm = &monitors[si];
                                                 raw_target_y = pm.work_bottom - actual_win_h - height_px;
                                             }
                                         }
@@ -1327,15 +1337,15 @@ pub fn run() {
                                             let mut crossed_at_top = false;
                                             if is_random {
                                                 let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
-                                                let cur_idx = sorted.iter().position(|m| {
+                                                let cur_idx = sorted_indices.iter().position(|&si| { let m = &monitors[si];
                                                     center >= m.x as f64 && center <= (m.x + m.width) as f64
                                                 });
                                                 if let Some(idx) = cur_idx {
                                                     // 등반한 벽 방향의 인접 모니터 확인
-                                                    let has_neighbor = if is_left { idx > 0 } else { idx + 1 < sorted.len() };
+                                                    let has_neighbor = if is_left { idx > 0 } else { idx + 1 < sorted_indices.len() };
                                                     if has_neighbor && rng.gen_bool(0.5) {
                                                         // 인접 모니터로 건너가기
-                                                        let neighbor = if is_left { sorted[idx - 1] } else { sorted[idx + 1] };
+                                                        let neighbor = if is_left { &monitors[sorted_indices[idx - 1]] } else { &monitors[sorted_indices[idx + 1]] };
                                                         prev_scale = neighbor.scale_factor;
                                                         // 상단 이동 (Phase 2) — 진입 경계에서 출발, 방향 전환하여 먼 벽까지 이동
                                                         // (먼 벽에 도달하면 Phase 2 경계 판정에서 자연스럽게 하강 전환)
@@ -1356,6 +1366,14 @@ pub fn run() {
                                                 }
                                             }
                                             if !crossed_at_top {
+                                                // 등반 벽 가장자리에서 Phase 2 시작 (펫 위치 보정)
+                                                if is_left {
+                                                    // 좌측 벽 등반 → 좌측 끝에서 우측으로 이동
+                                                    current_x = climb_edge_x - margin;
+                                                } else {
+                                                    // 우측 벽 등반 → 우측 끝에서 좌측으로 이동
+                                                    current_x = climb_edge_x + actual_win_w as f64 - margin - pet_w;
+                                                }
                                                 move_phase = 2; // → Top (현재 모니터에서 계속)
                                             }
                                         }
@@ -1369,12 +1387,12 @@ pub fn run() {
 
                                         // 현재 모니터 찾기 (상단 Y 결정용)
                                         let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
-                                        let cur_idx = sorted.iter().position(|m| {
+                                        let cur_idx = sorted_indices.iter().position(|&si| { let m = &monitors[si];
                                             center >= m.x as f64 && center <= (m.x + m.width) as f64
                                         });
 
                                         if let Some(idx) = cur_idx {
-                                            let mon = sorted[idx];
+                                            let mon = &monitors[sorted_indices[idx]];
                                             prev_scale = mon.scale_factor;
                                             // 상단 표면 수직 방향 높이 오프셋 (양수=상단에서 멀어짐=아래)
                                             current_y = mon.y as f64 + height_px as f64;
@@ -1392,12 +1410,12 @@ pub fn run() {
 
                                             if at_edge {
                                                 // 인접 모니터 존재 여부 (Phase 2 이동 방향 기준)
-                                                let has_neighbor = if is_left { idx + 1 < sorted.len() } else { idx > 0 };
+                                                let has_neighbor = if is_left { idx + 1 < sorted_indices.len() } else { idx > 0 };
                                                 // 랜덤 모드: 인접 모니터 있어도 50% 확률로 하강 선택
                                                 let should_cross = has_neighbor && (!is_random || rng.gen_bool(0.5));
                                                 if should_cross {
                                                     // 인접 모니터 상단으로 이동
-                                                    let neighbor = if is_left { sorted[idx + 1] } else { sorted[idx - 1] };
+                                                    let neighbor = if is_left { &monitors[sorted_indices[idx + 1]] } else { &monitors[sorted_indices[idx - 1]] };
                                                     if is_left {
                                                         current_x = neighbor.x as f64 - margin;
                                                     } else {
@@ -1425,7 +1443,7 @@ pub fn run() {
                                             }
                                         } else {
                                             // 모니터 못 찾음 → fallback 하강
-                                            let fallback_mon = if is_left { sorted.last() } else { sorted.first() };
+                                            let fallback_mon = if is_left { sorted_indices.last() } else { sorted_indices.first() }.map(|&si| &monitors[si]);
                                             if let Some(fb) = fallback_mon {
                                                 move_phase = 3;
                                                 climb_top_y = fb.y as f64 - (actual_win_h as f64 - pet_w) / 2.0 + height_px as f64;
@@ -1459,16 +1477,16 @@ pub fn run() {
                                             if is_random {
                                                 // 랜덤 모드: 하강 완료 시 인접 모니터 건너가기 가능
                                                 let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
-                                                let cur_idx = sorted.iter().position(|m| {
+                                                let cur_idx = sorted_indices.iter().position(|&si| { let m = &monitors[si];
                                                     center >= m.x as f64 && center <= (m.x + m.width) as f64
                                                 });
                                                 let mut crossed_at_bottom = false;
                                                 if let Some(idx) = cur_idx {
                                                     // 하강한 벽 방향의 인접 모니터 확인 (하강 벽은 등반 반대쪽)
-                                                    let has_neighbor = if is_left { idx + 1 < sorted.len() } else { idx > 0 };
+                                                    let has_neighbor = if is_left { idx + 1 < sorted_indices.len() } else { idx > 0 };
                                                     if has_neighbor && rng.gen_bool(0.5) {
                                                         // 인접 모니터로 건너가기
-                                                        let neighbor = if is_left { sorted[idx + 1] } else { sorted[idx - 1] };
+                                                        let neighbor = if is_left { &monitors[sorted_indices[idx + 1]] } else { &monitors[sorted_indices[idx - 1]] };
                                                         prev_scale = neighbor.scale_factor;
                                                         // 하단 이동 (Phase 0) — 진입 경계에서 출발, 방향 전환하여 먼 벽까지 이동
                                                         // (먼 벽에 도달하면 Phase 0 경계 판정에서 자연스럽게 등반 전환)
@@ -1489,6 +1507,14 @@ pub fn run() {
                                                     }
                                                 }
                                                 if !crossed_at_bottom {
+                                                    // 하강 벽 가장자리에서 Phase 0 시작 (펫 위치 보정)
+                                                    if is_left {
+                                                        // 우측 벽 하강 → 우측 끝에서 좌측으로 이동
+                                                        current_x = climb_edge_x + actual_win_w as f64 - margin - pet_w;
+                                                    } else {
+                                                        // 좌측 벽 하강 → 좌측 끝에서 우측으로 이동
+                                                        current_x = climb_edge_x - margin;
+                                                    }
                                                     move_phase = 0;
                                                     smooth_y = climb_bottom_y - (actual_win_h as f64 - pet_w) / 2.0;
                                                     smooth_y_init = true;
@@ -1496,7 +1522,12 @@ pub fn run() {
                                                     random_dir_left = is_left;
                                                 }
                                             } else {
-                                                // Phase 0 복귀
+                                                // Phase 0 복귀 — 하강 벽 가장자리에서 시작 (펫 위치 보정)
+                                                if is_left {
+                                                    current_x = climb_edge_x + actual_win_w as f64 - margin - pet_w;
+                                                } else {
+                                                    current_x = climb_edge_x - margin;
+                                                }
                                                 move_phase = 0;
                                                 smooth_y = climb_bottom_y - (actual_win_h as f64 - pet_w) / 2.0;
                                                 smooth_y_init = true;
@@ -1796,7 +1827,9 @@ pub fn run() {
             update_msg_rotate,
             update_app_settings,
             get_auto_start,
-            set_auto_start
+            set_auto_start,
+            update_timer_state,
+            update_timer_font_size
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

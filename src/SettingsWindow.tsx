@@ -208,6 +208,19 @@ export default function SettingsWindow() {
   // 자동 실행 상태 (레지스트리 조회)
   const [autoStart, setAutoStart] = useState(false);
 
+  // 타이머 상태
+  const [timerMinutes, setTimerMinutes] = useState<number>(() => {
+    const saved = localStorage.getItem('timerMinutes');
+    return saved ? Number(saved) : 5;
+  });
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerRemaining, setTimerRemaining] = useState<number>(0);
+  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [timerFontSize, setTimerFontSize] = useState<number>(() => {
+    const saved = localStorage.getItem('timerFontSize');
+    return saved ? Number(saved) : 14;
+  });
+
   // 번역 함수
   const resolvedLang = resolveLanguage(language);
   const t = createT(resolvedLang);
@@ -295,6 +308,48 @@ export default function SettingsWindow() {
     setAlarms(newAlarms);
     localStorage.setItem('alarms', JSON.stringify(newAlarms));
     invoke('update_alarm_list', { alarms: newAlarms });
+  }, []);
+
+  // 타이머 시작
+  const handleTimerStart = useCallback(() => {
+    const endAt = Date.now() + timerMinutes * 60 * 1000;
+    setTimerRemaining(timerMinutes * 60);
+    setTimerRunning(true);
+    localStorage.setItem('timerEndAt', String(endAt));
+    localStorage.setItem('timerRunning', 'true');
+    invoke('update_timer_state', { running: true, endAt });
+
+    // 기존 인터벌 정리
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    timerIntervalRef.current = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+      setTimerRemaining(remaining);
+      if (remaining <= 0) {
+        // 타이머 종료
+        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+        setTimerRunning(false);
+        localStorage.setItem('timerRunning', 'false');
+        invoke('update_timer_state', { running: false, endAt: 0 });
+      }
+    }, 500);
+  }, [timerMinutes]);
+
+  // 타이머 중지
+  const handleTimerStop = useCallback(() => {
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    timerIntervalRef.current = null;
+    setTimerRunning(false);
+    setTimerRemaining(0);
+    localStorage.setItem('timerRunning', 'false');
+    invoke('update_timer_state', { running: false, endAt: 0 });
+  }, []);
+
+  // 타이머 인터벌 정리
+  useEffect(() => {
+    return () => {
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    };
   }, []);
 
   // 표시 설정 저장 및 메인 윈도우 동기화
@@ -616,6 +671,11 @@ export default function SettingsWindow() {
           <li>
             <button className={`sidebar-item ${settingsTab === "alarm" ? "active" : ""}`} onClick={() => setSettingsTab("alarm")}>
               {t('sidebar.alarm')}
+            </button>
+          </li>
+          <li>
+            <button className={`sidebar-item ${settingsTab === "timer" ? "active" : ""}`} onClick={() => setSettingsTab("timer")}>
+              {t('sidebar.timer')}
             </button>
           </li>
           <li>
@@ -1424,6 +1484,77 @@ export default function SettingsWindow() {
               </div>
             </div>
           </>
+        )}
+
+        {settingsTab === "timer" && (
+          <div className="settings-section">
+            <h3>{t('timer.title')}</h3>
+            <p className="description">{t('timer.description')}</p>
+            <div className="general-settings">
+              <div className="setting-item">
+                <span className="setting-label">{t('timer.minutes')}</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="60"
+                  value={timerMinutes}
+                  disabled={timerRunning}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setTimerMinutes(val);
+                    localStorage.setItem('timerMinutes', String(val));
+                  }}
+                  style={{ flex: 1 }}
+                />
+                <span className="value-badge">{timerMinutes}{t('timer.minutes')}</span>
+              </div>
+              <div className="setting-item">
+                <span className="setting-label">{t('timer.fontSize')}</span>
+                <select
+                  className="alarm-select"
+                  value={timerFontSize}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setTimerFontSize(val);
+                    localStorage.setItem('timerFontSize', String(val));
+                    invoke('update_timer_font_size', { size: val });
+                  }}
+                >
+                  {Array.from({ length: 11 }, (_, i) => i + 10).map(size => (
+                    <option key={size} value={size}>{size}px</option>
+                  ))}
+                </select>
+              </div>
+              {timerRunning && timerRemaining > 0 && (
+                <div className="setting-item" style={{ justifyContent: 'center' }}>
+                  <span style={{ fontSize: '24px', fontWeight: 'bold', fontVariantNumeric: 'tabular-nums' }}>
+                    {String(Math.floor(timerRemaining / 60)).padStart(2, '0')}:{String(timerRemaining % 60).padStart(2, '0')}
+                  </span>
+                </div>
+              )}
+              <div className="setting-item" style={{ gap: '8px' }}>
+                <button
+                  className="polling-apply"
+                  disabled={timerRunning}
+                  onClick={handleTimerStart}
+                  style={{ flex: 1 }}
+                >
+                  {t('timer.start')}
+                </button>
+                <button
+                  className="polling-apply"
+                  disabled={!timerRunning}
+                  onClick={handleTimerStop}
+                  style={{ flex: 1 }}
+                >
+                  {t('timer.stop')}
+                </button>
+              </div>
+            </div>
+            <p className="description" style={{ marginTop: '12px', color: '#999', fontSize: '11px' }}>
+              {t('timer.notice')}
+            </p>
+          </div>
         )}
 
         {settingsTab === "font" && (

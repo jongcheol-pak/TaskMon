@@ -418,8 +418,13 @@ body,
   transition: background 0.15s;
 }
 
-.polling-apply:hover {
+.polling-apply:hover:not(:disabled) {
   background: #ff6b7a;
+}
+
+.polling-apply:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* 알림 문구: 모니터링 문구와 구분되는 강조 스타일 */
@@ -744,10 +749,6 @@ body,
   justify-content: flex-end;
 }
 
-.export-import-buttons .polling-apply:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
 
 /* 색상 팔레트를 포함하는 setting-item: 세로 배치 */
 .setting-item.color-setting {
