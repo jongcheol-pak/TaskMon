@@ -10,20 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "TaskMon",
-        "width": 200,
-        "height": 60,
-        "transparent": true,
-        "decorations": false,
-        "shadow": false,
-        "resizable": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

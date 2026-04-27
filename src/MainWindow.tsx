@@ -175,6 +175,12 @@ export default function MainWindow() {
   const hurtTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isRightClickAnim, setIsRightClickAnim] = useState(false);
   const rightClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 우클릭 이미지 배열 순환 인덱스
+  const [rightClickVariant, setRightClickVariant] = useState<number>(() => {
+    const saved = localStorage.getItem('petRightClickVariant');
+    return saved !== null ? Number(saved) : 0;
+  });
+  const activeRightClickIdxRef = useRef(0);
 
   // 메인 윈도우 렌더링 완료 후 표시 (검은 창 깜빡임 방지)
   useEffect(() => {
@@ -205,6 +211,11 @@ export default function MainWindow() {
     const savedMode = localStorage.getItem('moveMode');
     if (savedMode !== null) {
       invoke("update_move_mode", { mode: Number(savedMode) });
+    }
+    // 저장된 마우스 사용 여부를 Rust에 적용
+    const savedMouse = localStorage.getItem('mouseEnabled');
+    if (savedMouse === 'false') {
+      invoke("update_mouse_enabled", { enabled: false });
     }
   }, []);
 
@@ -769,8 +780,14 @@ export default function MainWindow() {
 
     // rightClickImage가 있는 펫: 1회 재생 애니메이션
     if (currentPet.rightClickImage && currentPet.rightClickFrames) {
+      // 단일/배열 모두 지원
+      const rcImages = Array.isArray(currentPet.rightClickImage) ? currentPet.rightClickImage : [currentPet.rightClickImage];
+      const rcFrames = Array.isArray(currentPet.rightClickFrames) ? currentPet.rightClickFrames : [currentPet.rightClickFrames];
+      const idx = rightClickVariant % rcImages.length;
+      activeRightClickIdxRef.current = idx;
+
       setIsRightClickAnim(true);
-      const frames = currentPet.rightClickFrames;
+      const frames = rcFrames[idx];
       const duration = frames * 200;
       if (skeletonRef.current) {
         const totalWidth = scaledAnimWidth(frames);
@@ -781,6 +798,12 @@ export default function MainWindow() {
           ],
           { duration, iterations: 1, easing: `steps(${frames}, end)`, fill: 'forwards' }
         );
+      }
+      // 다음 우클릭을 위해 인덱스 순환
+      if (rcImages.length > 1) {
+        const next = (idx + 1) % rcImages.length;
+        setRightClickVariant(next);
+        localStorage.setItem('petRightClickVariant', String(next));
       }
       // hasVariants도 있으면 variant 순환도 동시 적용
       if (currentPet.hasVariants) {
@@ -840,8 +863,11 @@ export default function MainWindow() {
       bgImage = hurtImg;
       bgSize = makeBgSize(currentPet.hurtFrames);
     } else if (isRightClickAnim && currentPet.rightClickImage && currentPet.rightClickFrames) {
-      bgImage = currentPet.rightClickImage;
-      bgSize = makeBgSize(currentPet.rightClickFrames);
+      const rcImages = Array.isArray(currentPet.rightClickImage) ? currentPet.rightClickImage : [currentPet.rightClickImage];
+      const rcFrames = Array.isArray(currentPet.rightClickFrames) ? currentPet.rightClickFrames : [currentPet.rightClickFrames];
+      const idx = activeRightClickIdxRef.current;
+      bgImage = rcImages[idx];
+      bgSize = makeBgSize(rcFrames[idx]);
     } else if (isHovered) {
       bgImage = idleImg;
       bgSize = makeBgSize(currentIdleFrames);
@@ -956,8 +982,8 @@ export default function MainWindow() {
       <div style={{ position: 'relative' }}>
         {/* 충전 아이콘: 캐릭터 왼쪽 중앙에 표시 (absolute로 캐릭터 위치 영향 없음) */}
         {monitorConfig.showChargingIcon && batteryCharging && batteryPercent >= 0 && (() => {
-          // 아이콘 크기 비율: large=50%, medium=40%, small=30%
-          const sizeRatio = monitorConfig.chargingIconSize === 'large' ? 0.5 : monitorConfig.chargingIconSize === 'small' ? 0.3 : 0.4;
+          // 아이콘 크기 비율: large=50%, medium=40%, small=30%, xsmall=21%
+          const sizeRatio = monitorConfig.chargingIconSize === 'large' ? 0.5 : monitorConfig.chargingIconSize === 'small' ? 0.3 : monitorConfig.chargingIconSize === 'xsmall' ? 0.21 : 0.4;
           // 아이콘 거리: 음수=가까이, 양수=멀리
           const distance = (monitorConfig.chargingIconDistance ?? 0);
           return (

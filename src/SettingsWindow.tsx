@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { save, open, ask } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { type Language, resolveLanguage, createT } from "./locales";
 import { EMOJI_CATEGORIES } from "./emojis";
 import {
@@ -688,6 +689,11 @@ export default function SettingsWindow() {
               {t('sidebar.general')}
             </button>
           </li>
+          <li>
+            <button className={`sidebar-item ${settingsTab === "about" ? "active" : ""}`} onClick={() => setSettingsTab("about")}>
+              {t('sidebar.about')}
+            </button>
+          </li>
         </ul>
         {appVersion && <div className="sidebar-version">v{appVersion}</div>}
       </nav>
@@ -782,7 +788,7 @@ export default function SettingsWindow() {
                 }}
               >
                 <option key={RANDOM_PET_ID} value={RANDOM_PET_ID}>{t('pet.random')}</option>
-                {PET_TYPES.map((pet) => (
+                {[...PET_TYPES].sort((a, b) => t(`pet.${a.id}`).localeCompare(t(`pet.${b.id}`))).map((pet) => (
                   <option key={pet.id} value={pet.id}>{t(`pet.${pet.id}`)}</option>
                 ))}
               </select>
@@ -793,7 +799,7 @@ export default function SettingsWindow() {
               <input
                 type="range"
                 min={0}
-                max={200}
+                max={300}
                 value={petScale}
                 onChange={(e) => {
                   const scale = Number(e.target.value);
@@ -980,6 +986,7 @@ export default function SettingsWindow() {
                   <option value="large">{t('monitor.chargingIconSizeLarge')}</option>
                   <option value="medium">{t('monitor.chargingIconSizeMedium')}</option>
                   <option value="small">{t('monitor.chargingIconSizeSmall')}</option>
+                  <option value="xsmall">{t('monitor.chargingIconSizeXSmall')}</option>
                 </select>
               </div>
               {/* 충전 아이콘 거리 */}
@@ -992,7 +999,7 @@ export default function SettingsWindow() {
                   className="polling-input"
                   style={{ width: '60px' }}
                 >
-                  {Array.from({ length: 21 }, (_, i) => i - 10).map(v => (
+                  {Array.from({ length: 61 }, (_, i) => i - 50).map(v => (
                     <option key={v} value={v}>{v}</option>
                   ))}
                 </select>
@@ -1724,6 +1731,51 @@ export default function SettingsWindow() {
                   <option value="ko">{t('general.langKo')}</option>
                   <option value="en">{t('general.langEn')}</option>
                 </select>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {settingsTab === "about" && (
+          <div className="settings-section">
+            <h3>{t('about.title')}</h3>
+            <div className="about-block">
+              <div className="about-row">
+                <span className="about-label">{t('about.appVersion')}</span>
+                <span className="about-value">v{appVersion}</span>
+              </div>
+            </div>
+
+            <div className="about-block">
+              <div className="about-heading">{t('about.licenseTitle')}</div>
+              <div className="about-row">
+                <span className="about-label">{t('about.licenseName')}</span>
+              </div>
+              <p className="about-desc">{t('about.licenseDesc')}</p>
+              <div className="about-row">
+                <span className="about-label">{t('about.repoLabel')}</span>
+                <button
+                  className="about-link"
+                  onClick={() => openUrl('https://github.com/jongcheol-pak/TaskMon')}
+                >
+                  https://github.com/jongcheol-pak/TaskMon
+                </button>
+              </div>
+            </div>
+
+            <div className="about-block">
+              <div className="about-heading">{t('about.assetsTitle')}</div>
+              <p className="about-desc">{t('about.assetsDesc')}</p>
+              <div className="about-row">
+                <button
+                  className="about-link"
+                  onClick={() => openUrl('https://itch.io/')}
+                >
+                  {t('about.assetsLink')} (https://itch.io/)
+                </button>
+              </div>
+              <div className="about-row">
+                <span className="about-credits">{t('about.assetsCredits')}</span>
               </div>
             </div>
           </div>

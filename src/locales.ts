@@ -32,18 +32,17 @@ const ko = {
   'pet.dino2': '공룡(2)',
   'pet.dino3': '공룡(3)',
   'pet.dino4': '공룡(4)',
-  'pet.finn': 'Finn',
-  'pet.monster1': '몬스터(1)',
-  'pet.monster2': '몬스터(2)',
+  'pet.finn': '사람(2)',
   'pet.monster3': '몬스터(3)',
   'pet.monster4': '몬스터(4)',
   'pet.monster5': '몬스터(5)',
   'pet.monster6': '몬스터(6)',
   'pet.human1': '사람(1)',
-  'pet.human2': '사람(2)',
   'pet.human3': '사람(3)',
   'pet.random': '아무거나',
-  'pet.car1': '자동차(1)',
+  'pet.human5': '사람(5)',
+  'pet.human6': '사람(6)',
+  'pet.cat1': '고양이(1)',
 
   // 펫 색상
   'color.title': '펫 색상 커스텀',
@@ -65,6 +64,7 @@ const ko = {
   'monitor.chargingIconSizeLarge': '크게',
   'monitor.chargingIconSizeMedium': '보통',
   'monitor.chargingIconSizeSmall': '작게',
+  'monitor.chargingIconSizeXSmall': '더 작게',
   'monitor.chargingIconDistance': '충전 아이콘 거리',
 
   // 모니터링 메시지
@@ -203,6 +203,19 @@ const ko = {
   'export.save': '저장',
   'export.import': '가져오기',
   'export.confirmDelete': '기존 목록은 삭제 됩니다.',
+
+  // 정보
+  'sidebar.about': '정보',
+  'about.title': '정보',
+  'about.appVersion': '앱 버전',
+  'about.licenseTitle': '프로젝트 라이선스',
+  'about.licenseName': 'MIT License (출처 표시 의무)',
+  'about.licenseDesc': '본 프로젝트의 소스 코드는 MIT 라이선스를 따릅니다. 자유롭게 사용·수정·재배포할 수 있으며, 코드를 사용할 때에는 반드시 원본 출처(아래 저장소 링크)를 표시해야 합니다.',
+  'about.repoLabel': '소스 저장소',
+  'about.assetsTitle': '이미지 에셋 출처',
+  'about.assetsDesc': '본 프로젝트에 포함된 모든 픽셀 아트 스프라이트는 itch.io에서 무료로 사용 가능한 라이선스로 공개된 에셋만 사용했습니다. 이미지 에셋은 MIT 라이선스 적용 대상이 아니며, 각 원작자의 라이선스를 따릅니다.',
+  'about.assetsLink': 'itch.io 방문',
+  'about.assetsCredits': '(이미지 제작자 X 태그 : @ArksDigital, @LazyHamsters)',
 } as Record<string, string>;
 
 // 영문 리소스
@@ -235,18 +248,17 @@ const en: Record<string, string> = {
   'pet.dino2': 'Dino (2)',
   'pet.dino3': 'Dino (3)',
   'pet.dino4': 'Dino (4)',
-  'pet.finn': 'Finn',
-  'pet.monster1': 'Monster (1)',
-  'pet.monster2': 'Monster (2)',
+  'pet.finn': 'Human (2)',
   'pet.monster3': 'Monster (3)',
   'pet.monster4': 'Monster (4)',
   'pet.monster5': 'Monster (5)',
   'pet.monster6': 'Monster (6)',
   'pet.human1': 'Human (1)',
-  'pet.human2': 'Human (2)',
   'pet.human3': 'Human (3)',
   'pet.random': 'Random',
-  'pet.car1': 'Car (1)',
+  'pet.human5': 'Human (5)',
+  'pet.human6': 'Human (6)',
+  'pet.cat1': 'Cat (1)',
 
   // 펫 색상
   'color.title': 'Pet Color Custom',
@@ -268,6 +280,7 @@ const en: Record<string, string> = {
   'monitor.chargingIconSizeLarge': 'Large',
   'monitor.chargingIconSizeMedium': 'Medium',
   'monitor.chargingIconSizeSmall': 'Small',
+  'monitor.chargingIconSizeXSmall': 'Extra Small',
   'monitor.chargingIconDistance': 'Charging Icon Distance',
 
   // 모니터링 메시지
@@ -406,6 +419,19 @@ const en: Record<string, string> = {
   'export.save': 'Save',
   'export.import': 'Import',
   'export.confirmDelete': 'Existing list will be deleted.',
+
+  // 정보
+  'sidebar.about': 'About',
+  'about.title': 'About',
+  'about.appVersion': 'App Version',
+  'about.licenseTitle': 'Project License',
+  'about.licenseName': 'MIT License (Attribution Required)',
+  'about.licenseDesc': 'The source code of this project is licensed under the MIT License. You may freely use, modify, and redistribute it, provided that you give clear attribution to the original source (the repository link below) whenever you reuse the code.',
+  'about.repoLabel': 'Source Repository',
+  'about.assetsTitle': 'Image Asset Source',
+  'about.assetsDesc': 'All pixel art sprites bundled with this project are sourced from itch.io and limited to assets released under licenses that permit free use. Image assets are NOT covered by the MIT License above and remain under the license of their original creators.',
+  'about.assetsLink': 'Visit itch.io',
+  'about.assetsCredits': '(Image creators on X : @ArksDigital, @LazyHamsters)',
 };
 
 const translations: Record<string, Record<string, string>> = { ko, en };

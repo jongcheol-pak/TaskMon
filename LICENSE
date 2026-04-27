@@ -1,0 +1,45 @@
+MIT License (Attribution Required)
+
+Copyright (c) 2026 jongcheol-pak
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, subject to the following conditions:
+
+1. Attribution requirement
+   When the Software, in whole or in part, is reused, redistributed, or
+   incorporated into derivative works (whether in source or binary form), the
+   following attribution MUST be retained and clearly visible:
+
+       "Includes code from TaskMon by jongcheol-pak
+        (https://github.com/jongcheol-pak/TaskMon)"
+
+   The attribution must appear in at least one of the following:
+   - The product's documentation, README, or "About" screen
+   - The source code header of the reused files
+   - The credits / acknowledgements section of the derivative work
+
+2. The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Image Assets
+
+All sprite/image assets bundled with TaskMon are sourced from https://itch.io/
+and are limited to assets that the original authors have explicitly released
+for free use. The image assets are NOT covered by this MIT License — they
+remain the property of their respective creators on itch.io. Anyone who
+redistributes or modifies TaskMon must independently verify the licensing
+terms of each asset on its original itch.io page before reusing it outside
+this project.

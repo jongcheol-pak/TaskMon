@@ -33,16 +33,6 @@ import finnRun from './assets/Finn_Run.png';
 import finnIdle from './assets/Finn_Idle.png';
 import finnHurt from './assets/Finn_Hurt.png';
 import finnRightClick from './assets/Finn_RightClick.png';
-// 몬스터(1) 스프라이트
-import monster1Walk from './assets/Monster1_Walk.png';
-import monster1Idle from './assets/Monster1_Idle.png';
-import monster1Hurt from './assets/Monster1_Hurt.png';
-import monster1Run from './assets/Monster1_Run.png';
-// 몬스터(2) 스프라이트
-import monster2Walk from './assets/Monster2_Walk.png';
-import monster2Idle from './assets/Monster2_Idle.png';
-import monster2Hurt from './assets/Monster2_Hurt.png';
-import monster2Run from './assets/Monster2_Run.png';
 // 몬스터(3) 스프라이트
 import monster3Walk from './assets/Monster3_Walk.png';
 import monster3Idle from './assets/Monster3_Idle.png';
@@ -71,17 +61,29 @@ import human1Walk from './assets/Human1_Walk.png';
 import human1Idle from './assets/Human1_Idle.png';
 import human1Hurt from './assets/Human1_Hurt.png';
 import human1Dash from './assets/Human1_Dash.png';
-// 사람(2) 스프라이트
-import human2Run from './assets/Human2_Run.png';
-import human2Idle from './assets/Human2_Idle.png';
-import human2Hurt from './assets/Human2_Hurt.png';
 // 사람(3) 스프라이트
 import human3Walk from './assets/Human3_Walk.png';
 import human3Idle from './assets/Human3_Idle.png';
 import human3Run from './assets/Human3_Run.png';
-// 자동차(1) 스프라이트
-import car1Run from './assets/Car1_Run.png';
-import car1Hurt from './assets/Car1_Hurt.png';
+// 사람(6) 스프라이트
+import human6Run from './assets/Human6_Run.png';
+import human6Idle from './assets/Human6_Idle.png';
+import human6Hit from './assets/Human6_Hit.png';
+import human6Attack1 from './assets/Human6_Attack1.png';
+import human6Attack2 from './assets/Human6_Attack2.png';
+// 사람(5) 스프라이트
+import human5Run from './assets/Human5_Run.png';
+import human5Idle from './assets/Human5_Idle.png';
+import human5Defend from './assets/Human5_Defend.png';
+import human5Attack1 from './assets/Human5_Attack1.png';
+import human5Attack2 from './assets/Human5_Attack2.png';
+import human5Attack3 from './assets/Human5_Attack3.png';
+// 고양이(1) 스프라이트
+import cat1Walk from './assets/Cat1_Walk.png';
+import cat1Idle from './assets/Cat1_Idle.png';
+import cat1Hurt from './assets/Cat1_Hurt.png';
+import cat1Attack from './assets/Cat1_Attack.png';
+import cat1Run from './assets/Cat1_Run.png';
 
 // 펫 종류 정의
 export interface PetType {
@@ -97,8 +99,8 @@ export interface PetType {
   frameHeight: number;            // 1프레임 높이 (px, 실제 이미지 높이)
   bottomPadding: number;          // 하단 투명 여백 (px, 위치 보정용)
   hasVariants: boolean;           // 우클릭 variant 전환 지원 여부
-  rightClickImage?: string;       // 우클릭 1회 재생 이미지 (hasVariants: false일 때 사용)
-  rightClickFrames?: number;      // 우클릭 1회 재생 프레임 수
+  rightClickImage?: string | readonly string[];  // 우클릭 1회 재생 이미지 (단일 또는 순환 배열)
+  rightClickFrames?: number | number[];          // 우클릭 1회 재생 프레임 수 (배열이면 rightClickImage와 1:1 대응)
   flipX: boolean;                 // 좌우 반전 여부 (원본이 왼쪽 향하면 true)
   speedFactor: number;            // 이동 속도 배율 (1.0 = 기본)
   displayScale: number;           // 표시 배율 (1.0 = 원본 크기)
@@ -210,7 +212,7 @@ export const PET_TYPES: PetType[] = [
   },
   {
     id: 'finn',
-    name: 'Finn',
+    name: '사람(2)',
     runImages: [finnRun],
     idleImages: [finnIdle],
     hurtImage: finnHurt,
@@ -223,40 +225,6 @@ export const PET_TYPES: PetType[] = [
     hasVariants: false,
     rightClickImage: finnRightClick,
     rightClickFrames: 5,
-    flipX: false,
-    speedFactor: 1.0,
-    displayScale: 1.0,
-  },
-  {
-    id: 'monster1',
-    name: '몬스터(1)',
-    runImages: [monster1Walk, monster1Run],
-    idleImages: [monster1Idle, monster1Idle],
-    hurtImage: monster1Hurt,
-    hurtFrames: 6,
-    idleFrames: [4, 4],
-    runFrames: [6, 8],
-    frameWidth: 64,
-    frameHeight: 40,
-    bottomPadding: 0,
-    hasVariants: true,
-    flipX: false,
-    speedFactor: 1.0,
-    displayScale: 1.0,
-  },
-  {
-    id: 'monster2',
-    name: '몬스터(2)',
-    runImages: [monster2Walk, monster2Run],
-    idleImages: [monster2Idle, monster2Idle],
-    hurtImage: monster2Hurt,
-    hurtFrames: 6,
-    idleFrames: [4, 4],
-    runFrames: [6, 8],
-    frameWidth: 64,
-    frameHeight: 44,
-    bottomPadding: 0,
-    hasVariants: true,
     flipX: false,
     speedFactor: 1.0,
     displayScale: 1.0,
@@ -355,23 +323,6 @@ export const PET_TYPES: PetType[] = [
     displayScale: 1.0,
   },
   {
-    id: 'human2',
-    name: '사람(2)',
-    runImages: [human2Run],
-    idleImages: [human2Idle],
-    hurtImage: human2Hurt,
-    hurtFrames: 8,
-    idleFrames: [8],
-    runFrames: [12],
-    frameWidth: 32,
-    frameHeight: 30,
-    bottomPadding: 0,
-    hasVariants: false,
-    flipX: false,
-    speedFactor: 1.0,
-    displayScale: 1.0,
-  },
-  {
     id: 'human3',
     name: '사람(3)',
     runImages: [human3Walk, human3Run],
@@ -389,19 +340,59 @@ export const PET_TYPES: PetType[] = [
     displayScale: 1.0,
   },
   {
-    id: 'car1',
-    name: '자동차(1)',
-    runImages: [car1Run],
-    idleImages: [car1Run],
-    hurtImage: car1Hurt,
-    hurtFrames: 1,
-    idleFrames: [5],
-    runFrames: [5],
-    frameWidth: 184,
-    frameHeight: 68,
+    id: 'human5',
+    name: '사람(5)',
+    runImages: [human5Run],
+    idleImages: [human5Idle],
+    hurtImage: human5Defend,
+    hurtFrames: 6,
+    idleFrames: [7],
+    runFrames: [8],
+    frameWidth: 96,
+    frameHeight: 45,
     bottomPadding: 0,
     hasVariants: false,
+    rightClickImage: [human5Attack1, human5Attack2, human5Attack3],
+    rightClickFrames: [6, 5, 6],
     flipX: false,
+    speedFactor: 1.0,
+    displayScale: 1.0,
+  },
+  {
+    id: 'human6',
+    name: '사람(6)',
+    runImages: [human6Run],
+    idleImages: [human6Idle],
+    hurtImage: human6Hit,
+    hurtFrames: 1,
+    idleFrames: [10],
+    runFrames: [10],
+    frameWidth: 120,
+    frameHeight: 45,
+    bottomPadding: 0,
+    hasVariants: false,
+    rightClickImage: [human6Attack1, human6Attack2],
+    rightClickFrames: [4, 6],
+    flipX: false,
+    speedFactor: 1.0,
+    displayScale: 1.0,
+  },
+  {
+    id: 'cat1',
+    name: '고양이(1)',
+    runImages: [cat1Walk, cat1Run],
+    idleImages: [cat1Idle, cat1Idle],
+    hurtImage: cat1Hurt,
+    hurtFrames: 4,
+    idleFrames: [8, 8],
+    runFrames: [12, 8],
+    frameWidth: 80,
+    frameHeight: 40,
+    bottomPadding: 0,
+    hasVariants: true,
+    rightClickImage: cat1Attack,
+    rightClickFrames: 8,
+    flipX: true,
     speedFactor: 1.0,
     displayScale: 1.0,
   },

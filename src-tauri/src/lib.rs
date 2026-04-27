@@ -1,7 +1,18 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::path::PathBuf;
 use rand::Rng;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+/// WebView2 사용자 데이터 디렉터리 경로 반환.
+/// 앱 설치 폴더(`%LocalAppData%\TaskMon`)와 동일한 위치를 사용하여
+/// 설치 폴더와 사용자 설정이 한 곳에서 관리되도록 한다.
+/// 결과적으로 LocalStorage 경로는 `%LocalAppData%\TaskMon\EBWebView\Default\Local Storage\` 가 된다.
+fn webview_data_directory() -> PathBuf {
+    let local_app_data = std::env::var("LOCALAPPDATA")
+        .unwrap_or_else(|_| String::from(r"C:\Users\Default\AppData\Local"));
+    PathBuf::from(local_app_data).join("TaskMon")
+}
 
 /// 전체화면 앱 실행 여부를 SHQueryUserNotificationState로 O(1) 판단
 /// EnumWindows 순회 없이 Windows 셸이 관리하는 상태를 직접 조회
@@ -354,6 +365,10 @@ struct AppState {
     pet_height_offset: Arc<AtomicI32>,
     /// 마우스 사용 여부 (false이면 캐릭터 윈도우 클릭 투과)
     mouse_enabled: Arc<AtomicBool>,
+    /// 실행 상태 (트레이 메뉴 재빌드용)
+    is_running: Arc<AtomicBool>,
+    /// 현재 언어 설정 (트레이 메뉴 번역용)
+    tray_language: Arc<std::sync::Mutex<String>>,
 }
 
 /// 펫 스프라이트의 실제 렌더링 너비 갱신 (CSS px 단위)
@@ -522,9 +537,25 @@ fn update_timer_font_size(app: AppHandle, size: u32) {
     let _ = app.emit("timer-font-size-update", size);
 }
 
-/// 폰트/언어 설정 동기화 (설정 → 메인 윈도우)
+/// 폰트/언어 설정 동기화 (설정 → 메인 윈도우) + 트레이 메뉴 언어 갱신
 #[tauri::command]
-fn update_app_settings(app: AppHandle, language: String, font_size: u32, font_family: String, monitoring_font_color: String, alarm_font_color: String) {
+fn update_app_settings(app: AppHandle, state: State<'_, AppState>, language: String, font_size: u32, font_family: String, monitoring_font_color: String, alarm_font_color: String) {
+    // 트레이 메뉴 언어 갱신
+    let prev_lang = {
+        let mut lang = state.tray_language.lock().unwrap();
+        let prev = lang.clone();
+        *lang = language.clone();
+        prev
+    };
+    // 언어가 변경되었으면 트레이 메뉴 재빌드
+    if prev_lang != language {
+        let running = state.is_running.load(Ordering::Relaxed);
+        if let Ok(new_menu) = build_tray_menu(&app, running, &language) {
+            if let Some(tray) = app.tray_by_id("main-tray") {
+                let _ = tray.set_menu(Some(new_menu));
+            }
+        }
+    }
     let _ = app.emit("app-settings-update", serde_json::json!({
         "language": language,
         "fontSize": font_size,
@@ -615,6 +646,7 @@ fn open_or_focus_settings(app: &AppHandle) {
         .center()
         .skip_taskbar(false)
         .visible(false)
+        .data_directory(webview_data_directory())
         .build();
         if let Some(w) = app.get_webview_window("settings") {
             let w2 = w.clone();
@@ -627,16 +659,25 @@ fn open_or_focus_settings(app: &AppHandle) {
     }
 }
 
-/// 현재 실행 상태에 따라 트레이 메뉴를 동적으로 빌드
-fn build_tray_menu(app: &AppHandle, running: bool) -> tauri::Result<Menu<tauri::Wry>> {
-    let quit_i = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-    let settings_i = MenuItem::with_id(app, "settings", "설정", true, None::<&str>)?;
+/// 언어 문자열을 한국어 여부로 판정 ("ko", "system" + 시스템 한국어 → true)
+fn is_korean(lang: &str) -> bool {
+    if lang == "ko" { return true; }
+    if lang == "en" { return false; }
+    // "system" 또는 기타 → 시스템 로케일 기준
+    sys_locale::get_locale().unwrap_or_default().starts_with("ko")
+}
+
+/// 현재 실행 상태와 언어에 따라 트레이 메뉴를 동적으로 빌드
+fn build_tray_menu(app: &AppHandle, running: bool, lang: &str) -> tauri::Result<Menu<tauri::Wry>> {
+    let ko = is_korean(lang);
+    let quit_i = MenuItem::with_id(app, "quit", if ko { "종료" } else { "Quit" }, true, None::<&str>)?;
+    let settings_i = MenuItem::with_id(app, "settings", if ko { "설정" } else { "Settings" }, true, None::<&str>)?;
 
     if running {
-        let stop_i = MenuItem::with_id(app, "stop", "중지", true, None::<&str>)?;
+        let stop_i = MenuItem::with_id(app, "stop", if ko { "중지" } else { "Stop" }, true, None::<&str>)?;
         Menu::with_items(app, &[&settings_i, &stop_i, &quit_i])
     } else {
-        let start_i = MenuItem::with_id(app, "start", "시작", true, None::<&str>)?;
+        let start_i = MenuItem::with_id(app, "start", if ko { "시작" } else { "Start" }, true, None::<&str>)?;
         Menu::with_items(app, &[&settings_i, &start_i, &quit_i])
     }
 }
@@ -712,6 +753,8 @@ pub fn run() {
             pet_visual_w: Arc::clone(&shared_pet_visual_w),
             pet_height_offset: Arc::clone(&shared_pet_height_offset),
             mouse_enabled: Arc::clone(&shared_mouse_enabled),
+            is_running: Arc::clone(&is_running),
+            tray_language: Arc::new(std::sync::Mutex::new("system".to_string())),
         })
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
             // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
@@ -721,8 +764,27 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         // move: is_running_tray/t1/t2, thread_hover_state 를 클로저 안으로 이동
         .setup(move |app| {
-            // 트레이 메뉴 초기 빌드 (실행 중 상태 → 중지 메뉴 표시)
-            let menu = build_tray_menu(app.handle(), true)?;
+            // 메인 윈도우를 코드로 생성 (tauri.conf.json 대신 명시적 빌더 사용).
+            // WebView2 데이터 디렉터리를 `%LocalAppData%\TaskMon`로 지정해 앱 설치 폴더와 동일 위치에 사용자 설정 저장.
+            let _ = tauri::webview::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("TaskMon")
+            .inner_size(200.0, 60.0)
+            .transparent(true)
+            .decorations(false)
+            .shadow(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .data_directory(webview_data_directory())
+            .build()?;
+
+            // 트레이 메뉴 초기 빌드 (실행 중 상태, 시스템 언어)
+            let menu = build_tray_menu(app.handle(), true, "system")?;
 
             if let Some(icon) = app.default_window_icon().cloned() {
                 // 시스템 언어에 따라 트레이 툴팁 설정
@@ -758,7 +820,8 @@ pub fn run() {
                                 }
 
                                 // 3. 트레이 메뉴 재빌드 (시작 메뉴만 표시)
-                                if let Ok(new_menu) = build_tray_menu(app, false) {
+                                let lang = app.state::<AppState>().tray_language.lock().unwrap().clone();
+                                if let Ok(new_menu) = build_tray_menu(app, false, &lang) {
                                     if let Some(tray) = app.tray_by_id("main-tray") {
                                         let _ = tray.set_menu(Some(new_menu));
                                     }
@@ -775,7 +838,8 @@ pub fn run() {
                                 }
 
                                 // 3. 트레이 메뉴 재빌드 (중지 메뉴만 표시)
-                                if let Ok(new_menu) = build_tray_menu(app, true) {
+                                let lang = app.state::<AppState>().tray_language.lock().unwrap().clone();
+                                if let Ok(new_menu) = build_tray_menu(app, true, &lang) {
                                     if let Some(tray) = app.tray_by_id("main-tray") {
                                         let _ = tray.set_menu(Some(new_menu));
                                     }
@@ -1102,6 +1166,10 @@ pub fn run() {
                 let mut prev_target_x: i32 = i32::MIN; // SetWindowPos 위치 변경 감지용
                 let mut prev_target_y: i32 = i32::MIN;
                 let mut prev_cursor_on_pet: bool = false; // 커서-펫 충돌 상태 (클릭 투과 토글용)
+                let mut prev_mouse_enabled: bool = true; // 마우스 사용 상태 변경 감지용
+                let mut cross_pending: bool = false; // 건너가기 보류 (화면 밖 이탈 후 전환)
+                let mut cross_exit_y: f64 = 0.0; // 화면 밖 판정 Y 좌표
+                let mut cross_neighbor: MonitorInfo = MonitorInfo::default(); // 건너가기 대상 모니터
                 let mut sorted_indices: Vec<usize> = Vec::with_capacity(8); // 등반 모드용 정렬 인덱스 (재사용)
                 loop {
                     // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
@@ -1330,10 +1398,26 @@ pub fn run() {
                                         let wall_offset = if is_left { height_px as f64 } else { -(height_px as f64) };
                                         current_x = climb_edge_x + wall_offset;
 
-                                        if current_y <= climb_top_y {
-                                            current_y = climb_top_y;
-
-                                            // 랜덤 모드: 상단 도달 시 인접 모니터로 건너가기 가능
+                                        if cross_pending {
+                                            // 건너가기 보류: 화면 밖으로 완전히 나갈 때까지 계속 등반
+                                            if current_y <= cross_exit_y {
+                                                // 이웃 모니터 상단으로 전환 (Phase 2)
+                                                prev_scale = cross_neighbor.scale_factor;
+                                                random_dir_left = !is_left;
+                                                let np_w = pet_visual_w_reader.load(Ordering::Relaxed) as f64 * prev_scale;
+                                                let nm = (LOGICAL_WIN_W * prev_scale - np_w) / 2.0;
+                                                let nh = (height_offset as f64 * prev_scale).round() as i32;
+                                                if is_left {
+                                                    current_x = (cross_neighbor.x + cross_neighbor.width) as f64 - nm - np_w;
+                                                } else {
+                                                    current_x = cross_neighbor.x as f64 - nm;
+                                                }
+                                                current_y = cross_neighbor.y as f64 + nh as f64;
+                                                move_phase = 2;
+                                                cross_pending = false;
+                                            }
+                                        } else if current_y <= climb_top_y {
+                                            // 상단 도달: 건너가기 결정
                                             let mut crossed_at_top = false;
                                             if is_random {
                                                 let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
@@ -1344,34 +1428,22 @@ pub fn run() {
                                                     // 등반한 벽 방향의 인접 모니터 확인
                                                     let has_neighbor = if is_left { idx > 0 } else { idx + 1 < sorted_indices.len() };
                                                     if has_neighbor && rng.gen_bool(0.5) {
-                                                        // 인접 모니터로 건너가기
+                                                        // 건너가기 보류: 화면 밖으로 나간 후 전환
                                                         let neighbor = if is_left { &monitors[sorted_indices[idx - 1]] } else { &monitors[sorted_indices[idx + 1]] };
-                                                        prev_scale = neighbor.scale_factor;
-                                                        // 상단 이동 (Phase 2) — 진입 경계에서 출발, 방향 전환하여 먼 벽까지 이동
-                                                        // (먼 벽에 도달하면 Phase 2 경계 판정에서 자연스럽게 하강 전환)
-                                                        // is_left=true → 좌측 이웃 진입 → 우측(진입 경계)에서 출발 → 좌측으로 이동
-                                                        // is_left=false → 우측 이웃 진입 → 좌측(진입 경계)에서 출발 → 우측으로 이동
-                                                        {
-                                                            random_dir_left = !is_left;
-                                                            if is_left {
-                                                                current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
-                                                            } else {
-                                                                current_x = neighbor.x as f64 - margin;
-                                                            }
-                                                            current_y = neighbor.y as f64 + height_px as f64;
-                                                            move_phase = 2;
-                                                        }
+                                                        cross_pending = true;
+                                                        cross_neighbor = neighbor.clone();
+                                                        cross_exit_y = climb_top_y - actual_win_h as f64;
                                                         crossed_at_top = true;
+                                                        // current_y 클램프 안 함 → 계속 등반하여 화면 밖으로
                                                     }
                                                 }
                                             }
                                             if !crossed_at_top {
+                                                current_y = climb_top_y;
                                                 // 등반 벽 가장자리에서 Phase 2 시작 (펫 위치 보정)
                                                 if is_left {
-                                                    // 좌측 벽 등반 → 좌측 끝에서 우측으로 이동
                                                     current_x = climb_edge_x - margin;
                                                 } else {
-                                                    // 우측 벽 등반 → 우측 끝에서 좌측으로 이동
                                                     current_x = climb_edge_x + actual_win_w as f64 - margin - pet_w;
                                                 }
                                                 move_phase = 2; // → Top (현재 모니터에서 계속)
@@ -1471,9 +1543,27 @@ pub fn run() {
                                         let wall_offset = if is_left { -(height_px as f64) } else { height_px as f64 };
                                         current_x = climb_edge_x + wall_offset;
 
-                                        if current_y >= climb_bottom_y {
-                                            current_y = climb_bottom_y;
-
+                                        if cross_pending {
+                                            // 건너가기 보류: 화면 밖으로 완전히 나갈 때까지 계속 하강
+                                            if current_y >= cross_exit_y {
+                                                // 이웃 모니터 하단으로 전환 (Phase 0)
+                                                prev_scale = cross_neighbor.scale_factor;
+                                                random_dir_left = !is_left;
+                                                let np_w = pet_visual_w_reader.load(Ordering::Relaxed) as f64 * prev_scale;
+                                                let nm = (LOGICAL_WIN_W * prev_scale - np_w) / 2.0;
+                                                let nh = (height_offset as f64 * prev_scale).round() as i32;
+                                                let nwh = (LOGICAL_WIN_H * prev_scale) as i32;
+                                                if is_left {
+                                                    current_x = cross_neighbor.x as f64 - nm;
+                                                } else {
+                                                    current_x = (cross_neighbor.x + cross_neighbor.width) as f64 - nm - np_w;
+                                                }
+                                                smooth_y = (cross_neighbor.work_bottom - nwh - nh) as f64;
+                                                smooth_y_init = true;
+                                                move_phase = 0;
+                                                cross_pending = false;
+                                            }
+                                        } else if current_y >= climb_bottom_y {
                                             if is_random {
                                                 // 랜덤 모드: 하강 완료 시 인접 모니터 건너가기 가능
                                                 let center = current_x + (LOGICAL_WIN_W / 2.0 * prev_scale);
@@ -1485,34 +1575,21 @@ pub fn run() {
                                                     // 하강한 벽 방향의 인접 모니터 확인 (하강 벽은 등반 반대쪽)
                                                     let has_neighbor = if is_left { idx + 1 < sorted_indices.len() } else { idx > 0 };
                                                     if has_neighbor && rng.gen_bool(0.5) {
-                                                        // 인접 모니터로 건너가기
+                                                        // 건너가기 보류: 화면 밖으로 나간 후 전환
                                                         let neighbor = if is_left { &monitors[sorted_indices[idx + 1]] } else { &monitors[sorted_indices[idx - 1]] };
-                                                        prev_scale = neighbor.scale_factor;
-                                                        // 하단 이동 (Phase 0) — 진입 경계에서 출발, 방향 전환하여 먼 벽까지 이동
-                                                        // (먼 벽에 도달하면 Phase 0 경계 판정에서 자연스럽게 등반 전환)
-                                                        // is_left=true → 우측 이웃 진입 → 좌측(진입 경계)에서 출발 → 우측으로 이동
-                                                        // is_left=false → 좌측 이웃 진입 → 우측(진입 경계)에서 출발 → 좌측으로 이동
-                                                        {
-                                                            random_dir_left = !is_left;
-                                                            if is_left {
-                                                                current_x = neighbor.x as f64 - margin;
-                                                            } else {
-                                                                current_x = (neighbor.x + neighbor.width) as f64 - margin - pet_w;
-                                                            }
-                                                            smooth_y = (neighbor.work_bottom - actual_win_h - height_px) as f64;
-                                                            smooth_y_init = true;
-                                                            move_phase = 0;
-                                                        }
+                                                        cross_pending = true;
+                                                        cross_neighbor = neighbor.clone();
+                                                        cross_exit_y = climb_bottom_y + actual_win_h as f64;
                                                         crossed_at_bottom = true;
+                                                        // current_y 클램프 안 함 → 계속 하강하여 화면 밖으로
                                                     }
                                                 }
                                                 if !crossed_at_bottom {
+                                                    current_y = climb_bottom_y;
                                                     // 하강 벽 가장자리에서 Phase 0 시작 (펫 위치 보정)
                                                     if is_left {
-                                                        // 우측 벽 하강 → 우측 끝에서 좌측으로 이동
                                                         current_x = climb_edge_x + actual_win_w as f64 - margin - pet_w;
                                                     } else {
-                                                        // 좌측 벽 하강 → 좌측 끝에서 우측으로 이동
                                                         current_x = climb_edge_x - margin;
                                                     }
                                                     move_phase = 0;
@@ -1522,6 +1599,7 @@ pub fn run() {
                                                     random_dir_left = is_left;
                                                 }
                                             } else {
+                                                current_y = climb_bottom_y;
                                                 // Phase 0 복귀 — 하강 벽 가장자리에서 시작 (펫 위치 보정)
                                                 if is_left {
                                                     current_x = climb_edge_x + actual_win_w as f64 - margin - pet_w;
@@ -1763,7 +1841,8 @@ pub fn run() {
                                 unsafe {
                                     let mut pt: [i32; 2] = [0, 0];
                                     if GetCursorPos(&mut pt) != 0 {
-                                        let cursor_on_pet = if !mouse_enabled_t2.load(Ordering::Relaxed) {
+                                        let mouse_enabled_now = mouse_enabled_t2.load(Ordering::Relaxed);
+                                        let cursor_on_pet = if !mouse_enabled_now {
                                             // 마우스 사용 꺼짐 → 항상 클릭 투과
                                             false
                                         } else if move_phase != 0 {
@@ -1783,10 +1862,13 @@ pub fn run() {
                                             pt[0] >= pet_left && pt[0] <= pet_right
                                                 && pt[1] >= pet_top && pt[1] <= pet_bottom
                                         };
-                                        if cursor_on_pet != prev_cursor_on_pet {
+                                        // 마우스 사용 상태 변경 시 강제 갱신 (prev_cursor_on_pet이 이미 false여도 클릭 투과 적용)
+                                        let mouse_changed = mouse_enabled_now != prev_mouse_enabled;
+                                        if cursor_on_pet != prev_cursor_on_pet || mouse_changed {
                                             let _ = window_clone.set_ignore_cursor_events(!cursor_on_pet);
                                             prev_cursor_on_pet = cursor_on_pet;
                                         }
+                                        prev_mouse_enabled = mouse_enabled_now;
                                     }
                                 }
                             }
