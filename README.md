@@ -16,7 +16,7 @@ Tauri · React 19 · TypeScript · Rust 기반으로 만들어졌습니다.
 ## 주요 기능
 
 - 화면 하단/모니터 테두리를 따라 자유롭게 이동하는 픽셀 아트 펫 (멀티 모니터 지원)
-- 23종의 펫 캐릭터 선택 (해골, 좀비, 공룡, 몬스터, 사람, 고양이 등)
+- 16종의 펫 캐릭터 선택 (해골, 좀비, 공룡, 몬스터, 사람, 고양이 등)
 - CPU 사용률 비례 이동 속도 (0% → 1배, 100% → 5배)
 - **6가지 이동 모드**: 기본 이동(오른쪽/왼쪽/반복), 등반 이동(오른쪽/왼쪽), 아무 곳으로 이동(랜덤)
 - 시스템 모니터링: CPU, 메모리, 네트워크 속도, 배터리 잔량
@@ -138,12 +138,6 @@ npm run tauri dev
 - [starship-battery](https://crates.io/crates/starship-battery) — 배터리 정보
 - [rand](https://crates.io/crates/rand) — 랜덤 이동 결정
 - [sys-locale](https://crates.io/crates/sys-locale) — 시스템 언어 감지
-
-## 알려진 제한 사항
-
-- 현재 Windows만 지원합니다 (macOS/Linux 미지원).
-- 사용자 설정은 WebView LocalStorage에 저장되므로 앱 재설치/WebView 데이터 삭제 시 초기화됩니다 (알림/메시지 목록은 설정 화면에서 JSON으로 내보내기/가져오기 가능).
-- 펫 이미지(픽셀 아트 스프라이트)는 [itch.io](https://itch.io/)에서 무료 사용 가능한 에셋만 사용했으며, 본 프로젝트의 MIT 라이선스가 적용되지 않습니다.
 
 ## 라이선스
 

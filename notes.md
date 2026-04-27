@@ -1,6 +1,7 @@
 # 프로젝트 진행 기록 (Notes)
 
 ## 최근 변경
+- 2026-04-27: README.md 정리 + 프로젝트 지침 신규 — (1) `알려진 제한 사항` 섹션 제거(내용이 시스템 요구 사항/설정 저장 위치/라이선스 섹션에 모두 중복), (2) 펫 개수 표기 오류 정정(`23종` → `16종`, 코드 PET_TYPES와 일치), (3) 루트에 `CLAUDE.md` 신규 작성 — README 섹션 순서·스타일·금지 사항·갱신 기준 명시(현재 형식을 그대로 유지하도록 강제, MailTrayNotifier 형식을 기준으로 함).
 - 2026-04-27: NSIS 설치 파일명을 `TaskMon_{버전}_x64-setup.exe`(Tauri 기본) → `TaskMon-Setup-v{버전}.exe`로 변경. (1) `scripts/rename-installer.cjs` 신규 — `tauri.conf.json`에서 버전 읽고 NSIS 출력 폴더의 `TaskMon_*-setup.exe` 패턴을 와일드카드 매칭하여 새 이름으로 rename(복수 후보 시 최신 mtime 선택, 동일 이름 결과물은 덮어쓰기), (2) `build.bat` 단계 [3/3] → [4/4]로 확장하여 빌드 직후 `node scripts/rename-installer.cjs` 자동 실행. 기존 NSIS 산출물로 스크립트 실행 검증 완료.
 - 2026-04-27: WebView2 사용자 데이터 디렉터리를 `%LocalAppData%\com.jongc.taskmon`(bundle identifier 기본값) → `%LocalAppData%\TaskMon`(앱 설치 폴더와 동일)로 변경. (1) `tauri.conf.json`에서 메인 윈도우 정의 제거(`"windows": []`), (2) `lib.rs`에 `webview_data_directory()` 헬퍼 추가(LOCALAPPDATA + "TaskMon"), (3) `setup()` 클로저에서 메인 윈도우를 `WebviewWindowBuilder`로 코드 생성하면서 `.data_directory()` 적용, (4) `open_or_focus_settings()`의 설정 윈도우 빌더에도 동일 `.data_directory()` 적용. 메인 윈도우 옵션 6개(transparent/decorations/shadow/resizable/alwaysOnTop/skipTaskbar/visible/title/inner_size) 모두 빌더로 이전. 마이그레이션 코드 없음 — 기존 사용자는 첫 실행 시 모든 설정이 초기화됨(기존 `com.jongc.taskmon` 폴더는 자동 삭제 안 됨, 수동 정리 필요). README의 설정 저장 위치 표 갱신. `cargo check` 통과.
 - 2026-04-27: README에 정보 탭 + 펫 말풍선 알림 캡처 추가 — 알림 등록 단계에 `bubble-notification.png`(펫 머리 위 말풍선 표시 예시) 인라인 추가, 일반 설정 다음에 `정보` 섹션 신규(`settings-about.png` 표시 + 정보 탭 설명).
