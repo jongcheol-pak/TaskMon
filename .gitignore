@@ -28,3 +28,7 @@ src-tauri/target/
 
 # 개발 중 생성된 임시 출력 파일 (cargo check 로그 등)
 src-tauri/check_output.txt
+
+# 작업 노트 / 계획 — 로컬 작업 메모이며 저장소 추적 대상 아님
+notes.md
+plan.md
