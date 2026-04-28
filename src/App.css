@@ -36,6 +36,8 @@ body,
   /* 말풍선 기본 폰트 */
   font-family: 'Segoe UI', sans-serif;
   font-size: 12px;
+  /* 등반/하강 phase 회전 시 부드러운 보간 (좌우 반전 scale은 별도 속성으로 분리되어 즉시 반영됨) */
+  transition: rotate 0.2s ease-out;
 }
 
 /* Idle 상태 말풍선: 캐릭터 위에 표시 (투명 배경 + 아웃라인) */
@@ -889,4 +891,12 @@ body,
 .about-credits {
   font-size: 11px;
   color: #888;
+}
+.about-update-text {
+  font-size: 12px;
+  color: #888;
+}
+.about-update-error {
+  font-size: 12px;
+  color: #ff8a8a;
 }

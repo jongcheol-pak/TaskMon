@@ -1,6 +1,6 @@
 // 다국어 번역 리소스 및 번역 함수
 
-export type Language = 'system' | 'ko' | 'en';
+export type Language = 'system' | 'ko' | 'en' | 'ja' | 'zh' | 'zh-Hant';
 
 // 한글 리소스
 const ko = {
@@ -55,6 +55,7 @@ const ko = {
   'monitor.title': '모니터링 항목',
   'monitor.description': '마우스를 올렸을 때 말풍선에 표시할 항목을 선택합니다.',
   'monitor.cpu': 'CPU 사용률',
+  'monitor.gpu': 'GPU 사용률',
   'monitor.memory': '메모리 사용률',
   'monitor.network': '네트워크 속도',
   'monitor.battery': '배터리',
@@ -81,6 +82,7 @@ const ko = {
   'msg.listTitle': '등록된 메시지',
   'msg.empty': '등록된 모니터링 메시지가 없습니다.',
   'msg.targetCpu': 'CPU',
+  'msg.targetGpu': 'GPU',
   'msg.targetMemory': '메모리',
   'msg.targetBattery': '배터리',
   'msg.targetNetDown': '네트워크 수신',
@@ -91,6 +93,7 @@ const ko = {
   'msg.condLe': '이하 (<=)',
   'msg.condEq': '같음 (=)',
   'msg.badgeCpu': 'CPU',
+  'msg.badgeGpu': 'GPU',
   'msg.badgeMemory': 'MEM',
   'msg.badgeBattery': 'BAT',
   'msg.badgeNetDown': 'NET↓',
@@ -187,6 +190,9 @@ const ko = {
   'general.langSystem': '시스템 언어',
   'general.langKo': '한국어',
   'general.langEn': 'English',
+  'general.langJa': '日本語',
+  'general.langZh': '简体中文',
+  'general.langZhHant': '繁體中文',
   'general.fontDefault': '기본',
 
   // 타이머
@@ -208,6 +214,13 @@ const ko = {
   'sidebar.about': '정보',
   'about.title': '정보',
   'about.appVersion': '앱 버전',
+  'about.updateChecking': '업데이트 확인 중...',
+  'about.updateAvailable': '업데이트가 있습니다.',
+  'about.updateLatest': '최신 버전입니다.',
+  'about.updateDownloading': '다운로드 중...',
+  'about.updateError': '업데이트 확인에 실패했습니다.',
+  'about.updateClickHint': '클릭하면 다운로드 후 설치 파일을 실행합니다.',
+  'about.updateNoChecksumPrompt': '이 릴리즈에는 체크섬 정보가 없어 다운로드한 파일의 무결성을 검증할 수 없습니다.\n그래도 다운로드를 진행하시겠습니까?',
   'about.licenseTitle': '프로젝트 라이선스',
   'about.licenseName': 'MIT License (출처 표시 의무)',
   'about.licenseDesc': '본 프로젝트의 소스 코드는 MIT 라이선스를 따릅니다. 자유롭게 사용·수정·재배포할 수 있으며, 코드를 사용할 때에는 반드시 원본 출처(아래 저장소 링크)를 표시해야 합니다.',
@@ -271,6 +284,7 @@ const en: Record<string, string> = {
   'monitor.title': 'Monitoring Items',
   'monitor.description': 'Select items to display in the speech bubble on hover.',
   'monitor.cpu': 'CPU Usage',
+  'monitor.gpu': 'GPU Usage',
   'monitor.memory': 'Memory Usage',
   'monitor.network': 'Network Speed',
   'monitor.battery': 'Battery',
@@ -297,6 +311,7 @@ const en: Record<string, string> = {
   'msg.listTitle': 'Registered Messages',
   'msg.empty': 'No monitoring messages registered.',
   'msg.targetCpu': 'CPU',
+  'msg.targetGpu': 'GPU',
   'msg.targetMemory': 'Memory',
   'msg.targetBattery': 'Battery',
   'msg.targetNetDown': 'Network Down',
@@ -307,6 +322,7 @@ const en: Record<string, string> = {
   'msg.condLe': 'Less or equal (<=)',
   'msg.condEq': 'Equal (=)',
   'msg.badgeCpu': 'CPU',
+  'msg.badgeGpu': 'GPU',
   'msg.badgeMemory': 'MEM',
   'msg.badgeBattery': 'BAT',
   'msg.badgeNetDown': 'NET↓',
@@ -403,6 +419,9 @@ const en: Record<string, string> = {
   'general.langSystem': 'System Language',
   'general.langKo': '한국어',
   'general.langEn': 'English',
+  'general.langJa': '日本語',
+  'general.langZh': '简体中文',
+  'general.langZhHant': '繁體中文',
   'general.fontDefault': 'Default',
 
   // 타이머
@@ -424,6 +443,13 @@ const en: Record<string, string> = {
   'sidebar.about': 'About',
   'about.title': 'About',
   'about.appVersion': 'App Version',
+  'about.updateChecking': 'Checking for updates...',
+  'about.updateAvailable': 'An update is available.',
+  'about.updateLatest': 'You are on the latest version.',
+  'about.updateDownloading': 'Downloading...',
+  'about.updateError': 'Failed to check for updates.',
+  'about.updateClickHint': 'Click to download and run the installer.',
+  'about.updateNoChecksumPrompt': 'This release does not include a checksum, so the integrity of the downloaded file cannot be verified.\nDo you still want to proceed with the download?',
   'about.licenseTitle': 'Project License',
   'about.licenseName': 'MIT License (Attribution Required)',
   'about.licenseDesc': 'The source code of this project is licensed under the MIT License. You may freely use, modify, and redistribute it, provided that you give clear attribution to the original source (the repository link below) whenever you reuse the code.',
@@ -434,23 +460,726 @@ const en: Record<string, string> = {
   'about.assetsCredits': '(Image creators on X : @ArksDigital, @LazyHamsters)',
 };
 
-const translations: Record<string, Record<string, string>> = { ko, en };
+// 일본어 리소스
+const ja: Record<string, string> = {
+  // 사이드바
+  'sidebar.title': '設定',
+  'sidebar.testMode': 'テストモード',
+  'sidebar.petColor': 'ペット',
+  'sidebar.monitoring': 'モニタリング',
+  'sidebar.messages': 'モニタリングメッセージ',
+  'sidebar.alarm': '通知',
+  'sidebar.font': 'フォント',
+  'sidebar.general': '設定',
 
-// 시스템 언어 감지: 한국어면 'ko', 그 외 모두 'en'
-export function detectSystemLanguage(): 'ko' | 'en' {
-  const lang = navigator.language || '';
+  // 테스트 모드
+  'test.title': 'テストモード',
+  'test.description': '実際のCPU使用率の代わりに手動で設定した値を使用します。',
+  'test.enable': 'テストモードを有効化',
+  'test.virtualCpu': '仮想CPU負荷',
+
+  // 펫 선택
+  'pet.label': 'ペット',
+  'pet.scale': 'ペットサイズ',
+  'pet.speed': 'ペット速度',
+  'pet.height': 'ペットの高さ',
+  'pet.description': 'あなたのCPUが美味しくて集まってきた連中',
+  'pet.skeleton': 'スケルトン',
+  'pet.zombie': 'ゾンビ',
+  'pet.dino1': '恐竜(1)',
+  'pet.dino2': '恐竜(2)',
+  'pet.dino3': '恐竜(3)',
+  'pet.dino4': '恐竜(4)',
+  'pet.finn': '人間(2)',
+  'pet.monster3': 'モンスター(3)',
+  'pet.monster4': 'モンスター(4)',
+  'pet.monster5': 'モンスター(5)',
+  'pet.monster6': 'モンスター(6)',
+  'pet.human1': '人間(1)',
+  'pet.human3': '人間(3)',
+  'pet.random': 'ランダム',
+  'pet.human5': '人間(5)',
+  'pet.human6': '人間(6)',
+  'pet.cat1': '猫(1)',
+
+  // 펫 색상
+  'color.title': 'ペットカラーカスタム',
+  'color.description': 'SVGフィルターを使ってペットの色を自由に変更します。',
+  'color.brightness': '明るさ補正 (Brightness)',
+  'color.opacity': '不透明度',
+  'color.reset': 'リセット',
+
+  // 모니터링
+  'monitor.title': 'モニタリング項目',
+  'monitor.description': 'マウスを乗せた時に吹き出しに表示する項目を選択します。',
+  'monitor.cpu': 'CPU使用率',
+  'monitor.gpu': 'GPU使用率',
+  'monitor.memory': 'メモリ使用率',
+  'monitor.network': 'ネットワーク速度',
+  'monitor.battery': 'バッテリー',
+  'monitor.batteryNone': 'なし',
+  'monitor.chargingIcon': '充電アイコンを表示',
+  'monitor.chargingIconSize': '充電アイコンのサイズ',
+  'monitor.chargingIconSizeLarge': '大',
+  'monitor.chargingIconSizeMedium': '中',
+  'monitor.chargingIconSizeSmall': '小',
+  'monitor.chargingIconSizeXSmall': '極小',
+  'monitor.chargingIconDistance': '充電アイコンの距離',
+
+  // 모니터링 메시지
+  'msg.addTitle': 'モニタリングメッセージを追加',
+  'msg.addDescription': 'システム状態の条件に応じてペットが表示するメッセージを設定します。',
+  'msg.target': '対象',
+  'msg.condition': '条件',
+  'msg.value': '値',
+  'msg.priority': '優先度',
+  'msg.priorityHelper': '高いほど優先',
+  'msg.message': 'メッセージ',
+  'msg.messagePlaceholder': '表示するメッセージを入力してください (最大50文字)',
+  'msg.add': '追加',
+  'msg.listTitle': '登録済みメッセージ',
+  'msg.empty': '登録済みのモニタリングメッセージがありません。',
+  'msg.targetCpu': 'CPU',
+  'msg.targetGpu': 'GPU',
+  'msg.targetMemory': 'メモリ',
+  'msg.targetBattery': 'バッテリー',
+  'msg.targetNetDown': 'ネットワーク受信',
+  'msg.targetNetUp': 'ネットワーク送信',
+  'msg.condGt': '超過 (>)',
+  'msg.condGe': '以上 (>=)',
+  'msg.condLt': '未満 (<)',
+  'msg.condLe': '以下 (<=)',
+  'msg.condEq': '等しい (=)',
+  'msg.badgeCpu': 'CPU',
+  'msg.badgeGpu': 'GPU',
+  'msg.badgeMemory': 'MEM',
+  'msg.badgeBattery': 'BAT',
+  'msg.badgeNetDown': 'NET↓',
+  'msg.badgeNetUp': 'NET↑',
+  'msg.rotateTitle': 'メッセージ表示方式',
+  'msg.showAll': '条件に合うすべてのメッセージを表示',
+  'msg.rotateIntervalLabel': '循環間隔 (秒)',
+
+  // 알림 - 표시 설정
+  'alarm.displayTitle': '表示設定',
+  'alarm.displayDescription': '移動中の吹き出しに表示するテキストの種類を選択します。',
+  'alarm.showMonitoring': 'モニタリングテキストを使用',
+  'alarm.showNotification': '通知テキストを使用',
+  'alarm.notificationPriority': '通知を優先',
+  'alarm.notificationPriorityDesc': 'モニタリングメッセージより優先して表示されます。',
+  'alarm.durationLabel': '通知表示時間 (秒)',
+  'alarm.modeLabel': '重複通知の表示',
+  'alarm.modeAll': 'すべて表示',
+  'alarm.modeFirst': '先に表示されたメッセージを優先',
+  'alarm.modeLatest': '最新のメッセージを優先表示',
+  'alarm.apply': '適用',
+
+  // 알림 - 추가
+  'alarm.addTitle': '通知を追加',
+  'alarm.typeLabel': 'タイプ',
+  'alarm.typeInterval': '一定時間ごとに繰り返し',
+  'alarm.typeAbsolute': '特定時刻に通知',
+  'alarm.typeDaily': '毎日特定の時刻',
+  'alarm.typeRelative': '今からN時間後',
+  'alarm.typeHourly': '毎時N分ごと',
+  'alarm.intervalLabel': '間隔 (分)',
+  'alarm.timeLabel': '時刻',
+  'alarm.delayLabel': '遅延',
+  'alarm.hourlyLabel': '分 (0~59)',
+  'alarm.messageLabel': '通知テキスト',
+  'alarm.messagePlaceholder': '通知メッセージを入力してください (最大50文字)',
+  'alarm.add': '追加',
+  'alarm.unitHours': '時間',
+  'alarm.unitMinutes': '分',
+
+  // 알림 - 목록
+  'alarm.listTitle': '登録済み通知',
+  'alarm.empty': '登録済みの通知がありません。',
+
+  // 알림 타입 라벨
+  'alarm.badge.interval': '繰り返し',
+  'alarm.badge.absolute': '特定時刻',
+  'alarm.badge.daily': '毎日',
+  'alarm.badge.relative': 'タイマー',
+  'alarm.badge.hourly': '毎時',
+
+  // 알림 상세 텍스트
+  'alarm.detail.everyNMin': '{n}分ごと',
+  'alarm.detail.daily': '毎日 {time}',
+  'alarm.detail.hoursMinAfter': '{h}時間{m}分後',
+  'alarm.detail.hoursAfter': '{h}時間後',
+  'alarm.detail.minAfter': '{n}分後',
+  'alarm.detail.hourlyAt': '毎時{n}分',
+
+  // 펫 이동
+  'sidebar.movement': 'ペット移動',
+  'movement.title': '移動モード',
+  'movement.description': 'ペットの移動方式を選択します。',
+  'movement.basicRight': '基本移動 (右)',
+  'movement.basicRightDesc': 'タスクバーの上を右へ移動します。',
+  'movement.basicLeft': '基本移動 (左)',
+  'movement.basicLeftDesc': 'タスクバーの上を左へ移動します。',
+  'movement.basicBounce': '基本移動 (反復)',
+  'movement.basicBounceDesc': '左右の端まで移動して方向を切り替えながら繰り返します。',
+  'movement.climbRight': '登攀移動 (右)',
+  'movement.climbRightDesc': 'モニターの縁に沿って右回りに巡回します。',
+  'movement.climbLeft': '登攀移動 (左)',
+  'movement.climbLeftDesc': 'モニターの縁に沿って左回りに巡回します。',
+  'movement.random': 'どこへでも移動',
+  'movement.randomDesc': '方向と登攀/横断をランダムに決定します。',
+
+  // 일반 설정
+  'general.title': '設定',
+  'general.pollingLabel': 'ポーリング間隔 (秒)',
+  'general.autoStart': '自動起動',
+  'general.mouseEnabled': 'マウス操作',
+  'general.mouseEnabledDesc': 'ペットにマウスを近づけるとidle状態に変わり、モニタリング値が表示されます。',
+  'general.bubbleLabel': '吹き出しを使用',
+  'general.bubbleSide': '左右の吹き出しを表示',
+  'general.bubbleTop': '上部の吹き出しを表示',
+  'general.bubbleHeight': '吹き出しの高さ',
+  'general.apply': '適用',
+  'font.title': 'フォント',
+  'general.fontSize': 'フォントサイズ',
+  'general.fontFamily': 'フォント',
+  'font.monitoringColor': 'モニタリングメッセージの色',
+  'font.alarmColor': '通知メッセージの色',
+  'general.language': '言語',
+  'general.langSystem': 'システム言語',
+  'general.langKo': '한국어',
+  'general.langEn': 'English',
+  'general.langJa': '日本語',
+  'general.langZh': '简体中文',
+  'general.langZhHant': '繁體中文',
+  'general.fontDefault': 'デフォルト',
+
+  // 타이머
+  'sidebar.timer': 'タイマー',
+  'timer.title': 'タイマー',
+  'timer.description': 'タイマー時間を設定して開始ボタンを押してください。',
+  'timer.minutes': '分',
+  'timer.start': '開始',
+  'timer.stop': '停止',
+  'timer.fontSize': 'フォントサイズ',
+  'timer.notice': 'タイマー実行中は、すべての通知とモニタリングメッセージが非表示になります。',
+
+  // 저장/가져오기
+  'export.save': '保存',
+  'export.import': '読み込み',
+  'export.confirmDelete': '既存のリストは削除されます。',
+
+  // 정보
+  'sidebar.about': '情報',
+  'about.title': '情報',
+  'about.appVersion': 'アプリバージョン',
+  'about.updateChecking': 'アップデート確認中...',
+  'about.updateAvailable': 'アップデートがあります。',
+  'about.updateLatest': '最新バージョンです。',
+  'about.updateDownloading': 'ダウンロード中...',
+  'about.updateError': 'アップデートの確認に失敗しました。',
+  'about.updateClickHint': 'クリックするとダウンロード後、インストーラーを実行します。',
+  'about.updateNoChecksumPrompt': 'このリリースにはチェックサム情報がないため、ダウンロードしたファイルの整合性を検証できません。\nそれでもダウンロードを続行しますか？',
+  'about.licenseTitle': 'プロジェクトライセンス',
+  'about.licenseName': 'MIT License (出典表示義務あり)',
+  'about.licenseDesc': '本プロジェクトのソースコードはMITライセンスに従います。自由に使用・改変・再配布できますが、コードを使用する際は必ず元の出典(下記リポジトリリンク)を表示する必要があります。',
+  'about.repoLabel': 'ソースリポジトリ',
+  'about.assetsTitle': '画像アセットの出典',
+  'about.assetsDesc': '本プロジェクトに含まれるすべてのピクセルアートスプライトは、itch.ioで無料利用可能なライセンスで公開されているアセットのみを使用しています。画像アセットはMITライセンスの対象外で、各原作者のライセンスに従います。',
+  'about.assetsLink': 'itch.ioを訪問',
+  'about.assetsCredits': '(画像制作者のXタグ : @ArksDigital, @LazyHamsters)',
+};
+
+// 중국어 간체 리소스 (简体中文)
+const zh: Record<string, string> = {
+  // 사이드바
+  'sidebar.title': '设置',
+  'sidebar.testMode': '测试模式',
+  'sidebar.petColor': '宠物',
+  'sidebar.monitoring': '监控',
+  'sidebar.messages': '监控消息',
+  'sidebar.alarm': '提醒',
+  'sidebar.font': '字体',
+  'sidebar.general': '设置',
+
+  // 테스트 모드
+  'test.title': '测试模式',
+  'test.description': '使用手动设置的值代替实际CPU使用率。',
+  'test.enable': '启用测试模式',
+  'test.virtualCpu': '虚拟CPU负载',
+
+  // 펫 선택
+  'pet.label': '宠物',
+  'pet.scale': '宠物大小',
+  'pet.speed': '宠物速度',
+  'pet.height': '宠物高度',
+  'pet.description': '被你美味的CPU吸引而来的家伙们',
+  'pet.skeleton': '骷髅',
+  'pet.zombie': '僵尸',
+  'pet.dino1': '恐龙(1)',
+  'pet.dino2': '恐龙(2)',
+  'pet.dino3': '恐龙(3)',
+  'pet.dino4': '恐龙(4)',
+  'pet.finn': '人类(2)',
+  'pet.monster3': '怪物(3)',
+  'pet.monster4': '怪物(4)',
+  'pet.monster5': '怪物(5)',
+  'pet.monster6': '怪物(6)',
+  'pet.human1': '人类(1)',
+  'pet.human3': '人类(3)',
+  'pet.random': '随机',
+  'pet.human5': '人类(5)',
+  'pet.human6': '人类(6)',
+  'pet.cat1': '猫(1)',
+
+  // 펫 색상
+  'color.title': '宠物颜色自定义',
+  'color.description': '使用SVG滤镜自由更改宠物的颜色。',
+  'color.brightness': '亮度调整 (Brightness)',
+  'color.opacity': '不透明度',
+  'color.reset': '重置',
+
+  // 모니터링
+  'monitor.title': '监控项目',
+  'monitor.description': '选择鼠标悬停时在气泡中显示的项目。',
+  'monitor.cpu': 'CPU使用率',
+  'monitor.gpu': 'GPU使用率',
+  'monitor.memory': '内存使用率',
+  'monitor.network': '网络速度',
+  'monitor.battery': '电池',
+  'monitor.batteryNone': '无',
+  'monitor.chargingIcon': '显示充电图标',
+  'monitor.chargingIconSize': '充电图标大小',
+  'monitor.chargingIconSizeLarge': '大',
+  'monitor.chargingIconSizeMedium': '中',
+  'monitor.chargingIconSizeSmall': '小',
+  'monitor.chargingIconSizeXSmall': '更小',
+  'monitor.chargingIconDistance': '充电图标距离',
+
+  // 모니터링 메시지
+  'msg.addTitle': '添加监控消息',
+  'msg.addDescription': '根据系统状态条件设置宠物显示的消息。',
+  'msg.target': '对象',
+  'msg.condition': '条件',
+  'msg.value': '值',
+  'msg.priority': '优先级',
+  'msg.priorityHelper': '越高越优先',
+  'msg.message': '消息',
+  'msg.messagePlaceholder': '输入要显示的消息 (最多50个字符)',
+  'msg.add': '添加',
+  'msg.listTitle': '已注册消息',
+  'msg.empty': '没有已注册的监控消息。',
+  'msg.targetCpu': 'CPU',
+  'msg.targetGpu': 'GPU',
+  'msg.targetMemory': '内存',
+  'msg.targetBattery': '电池',
+  'msg.targetNetDown': '网络下行',
+  'msg.targetNetUp': '网络上行',
+  'msg.condGt': '大于 (>)',
+  'msg.condGe': '大于等于 (>=)',
+  'msg.condLt': '小于 (<)',
+  'msg.condLe': '小于等于 (<=)',
+  'msg.condEq': '等于 (=)',
+  'msg.badgeCpu': 'CPU',
+  'msg.badgeGpu': 'GPU',
+  'msg.badgeMemory': 'MEM',
+  'msg.badgeBattery': 'BAT',
+  'msg.badgeNetDown': 'NET↓',
+  'msg.badgeNetUp': 'NET↑',
+  'msg.rotateTitle': '消息显示方式',
+  'msg.showAll': '显示所有匹配的消息',
+  'msg.rotateIntervalLabel': '轮播间隔 (秒)',
+
+  // 알림 - 표시 설정
+  'alarm.displayTitle': '显示设置',
+  'alarm.displayDescription': '选择移动时在气泡中显示的文本类型。',
+  'alarm.showMonitoring': '使用监控文本',
+  'alarm.showNotification': '使用提醒文本',
+  'alarm.notificationPriority': '提醒优先',
+  'alarm.notificationPriorityDesc': '优先于监控消息显示。',
+  'alarm.durationLabel': '提醒显示时间 (秒)',
+  'alarm.modeLabel': '重复提醒显示',
+  'alarm.modeAll': '全部显示',
+  'alarm.modeFirst': '优先显示先收到的消息',
+  'alarm.modeLatest': '优先显示最新消息',
+  'alarm.apply': '应用',
+
+  // 알림 - 추가
+  'alarm.addTitle': '添加提醒',
+  'alarm.typeLabel': '类型',
+  'alarm.typeInterval': '按间隔重复',
+  'alarm.typeAbsolute': '在特定时间提醒',
+  'alarm.typeDaily': '每天在特定时间',
+  'alarm.typeRelative': '从现在起N小时后',
+  'alarm.typeHourly': '每小时N分',
+  'alarm.intervalLabel': '间隔 (分钟)',
+  'alarm.timeLabel': '时间',
+  'alarm.delayLabel': '延迟',
+  'alarm.hourlyLabel': '分钟 (0~59)',
+  'alarm.messageLabel': '提醒文本',
+  'alarm.messagePlaceholder': '输入提醒消息 (最多50个字符)',
+  'alarm.add': '添加',
+  'alarm.unitHours': '小时',
+  'alarm.unitMinutes': '分钟',
+
+  // 알림 - 목록
+  'alarm.listTitle': '已注册提醒',
+  'alarm.empty': '没有已注册的提醒。',
+
+  // 알림 타입 라벨
+  'alarm.badge.interval': '重复',
+  'alarm.badge.absolute': '特定时间',
+  'alarm.badge.daily': '每天',
+  'alarm.badge.relative': '计时器',
+  'alarm.badge.hourly': '每小时',
+
+  // 알림 상세 텍스트
+  'alarm.detail.everyNMin': '每{n}分钟',
+  'alarm.detail.daily': '每天 {time}',
+  'alarm.detail.hoursMinAfter': '{h}小时{m}分后',
+  'alarm.detail.hoursAfter': '{h}小时后',
+  'alarm.detail.minAfter': '{n}分钟后',
+  'alarm.detail.hourlyAt': '每小时{n}分',
+
+  // 펫 이동
+  'sidebar.movement': '宠物移动',
+  'movement.title': '移动模式',
+  'movement.description': '选择宠物的移动方式。',
+  'movement.basicRight': '基本移动 (右)',
+  'movement.basicRightDesc': '在任务栏上方向右移动。',
+  'movement.basicLeft': '基本移动 (左)',
+  'movement.basicLeftDesc': '在任务栏上方向左移动。',
+  'movement.basicBounce': '基本移动 (循环)',
+  'movement.basicBounceDesc': '移动至左右两端后切换方向并循环。',
+  'movement.climbRight': '攀爬移动 (右)',
+  'movement.climbRightDesc': '沿着显示器边缘顺时针巡回。',
+  'movement.climbLeft': '攀爬移动 (左)',
+  'movement.climbLeftDesc': '沿着显示器边缘逆时针巡回。',
+  'movement.random': '随机移动',
+  'movement.randomDesc': '随机决定方向和攀爬/穿越。',
+
+  // 일반 설정
+  'general.title': '设置',
+  'general.pollingLabel': '轮询间隔 (秒)',
+  'general.autoStart': '自动启动',
+  'general.mouseEnabled': '鼠标交互',
+  'general.mouseEnabledDesc': '将鼠标靠近宠物时切换为idle状态并显示监控值。',
+  'general.bubbleLabel': '使用气泡',
+  'general.bubbleSide': '显示左右气泡',
+  'general.bubbleTop': '显示顶部气泡',
+  'general.bubbleHeight': '气泡高度',
+  'general.apply': '应用',
+  'font.title': '字体',
+  'general.fontSize': '字体大小',
+  'general.fontFamily': '字体',
+  'font.monitoringColor': '监控消息颜色',
+  'font.alarmColor': '提醒消息颜色',
+  'general.language': '语言',
+  'general.langSystem': '系统语言',
+  'general.langKo': '한국어',
+  'general.langEn': 'English',
+  'general.langJa': '日本語',
+  'general.langZh': '简体中文',
+  'general.langZhHant': '繁體中文',
+  'general.fontDefault': '默认',
+
+  // 타이머
+  'sidebar.timer': '计时器',
+  'timer.title': '计时器',
+  'timer.description': '设置计时器时间并按开始按钮。',
+  'timer.minutes': '分钟',
+  'timer.start': '开始',
+  'timer.stop': '停止',
+  'timer.fontSize': '字体大小',
+  'timer.notice': '计时器运行期间，所有提醒和监控消息将不会显示。',
+
+  // 저장/가져오기
+  'export.save': '保存',
+  'export.import': '导入',
+  'export.confirmDelete': '现有列表将被删除。',
+
+  // 정보
+  'sidebar.about': '关于',
+  'about.title': '关于',
+  'about.appVersion': '应用版本',
+  'about.updateChecking': '正在检查更新...',
+  'about.updateAvailable': '有可用更新。',
+  'about.updateLatest': '已是最新版本。',
+  'about.updateDownloading': '正在下载...',
+  'about.updateError': '检查更新失败。',
+  'about.updateClickHint': '点击下载并运行安装程序。',
+  'about.updateNoChecksumPrompt': '此版本不包含校验和信息，无法验证下载文件的完整性。\n是否仍然继续下载？',
+  'about.licenseTitle': '项目许可证',
+  'about.licenseName': 'MIT License (需署名)',
+  'about.licenseDesc': '本项目源代码遵循MIT许可证。您可以自由使用、修改和重新分发，但在使用代码时必须明确标注原始出处(下方仓库链接)。',
+  'about.repoLabel': '源代码仓库',
+  'about.assetsTitle': '图像资源出处',
+  'about.assetsDesc': '本项目中包含的所有像素艺术精灵均来自itch.io，仅使用以允许免费使用的许可证发布的资源。图像资源不在MIT许可证范围内，受各原作者的许可证约束。',
+  'about.assetsLink': '访问itch.io',
+  'about.assetsCredits': '(图像创作者X标签 : @ArksDigital, @LazyHamsters)',
+};
+
+// 중국어 번체 리소스 (繁體中文)
+const zhHant: Record<string, string> = {
+  // 사이드바
+  'sidebar.title': '設定',
+  'sidebar.testMode': '測試模式',
+  'sidebar.petColor': '寵物',
+  'sidebar.monitoring': '監控',
+  'sidebar.messages': '監控訊息',
+  'sidebar.alarm': '提醒',
+  'sidebar.font': '字型',
+  'sidebar.general': '設定',
+
+  // 테스트 모드
+  'test.title': '測試模式',
+  'test.description': '使用手動設定的值代替實際CPU使用率。',
+  'test.enable': '啟用測試模式',
+  'test.virtualCpu': '虛擬CPU負載',
+
+  // 펫 선택
+  'pet.label': '寵物',
+  'pet.scale': '寵物大小',
+  'pet.speed': '寵物速度',
+  'pet.height': '寵物高度',
+  'pet.description': '被你美味的CPU吸引而來的傢伙們',
+  'pet.skeleton': '骷髏',
+  'pet.zombie': '殭屍',
+  'pet.dino1': '恐龍(1)',
+  'pet.dino2': '恐龍(2)',
+  'pet.dino3': '恐龍(3)',
+  'pet.dino4': '恐龍(4)',
+  'pet.finn': '人類(2)',
+  'pet.monster3': '怪物(3)',
+  'pet.monster4': '怪物(4)',
+  'pet.monster5': '怪物(5)',
+  'pet.monster6': '怪物(6)',
+  'pet.human1': '人類(1)',
+  'pet.human3': '人類(3)',
+  'pet.random': '隨機',
+  'pet.human5': '人類(5)',
+  'pet.human6': '人類(6)',
+  'pet.cat1': '貓(1)',
+
+  // 펫 색상
+  'color.title': '寵物顏色自訂',
+  'color.description': '使用SVG濾鏡自由更改寵物的顏色。',
+  'color.brightness': '亮度調整 (Brightness)',
+  'color.opacity': '不透明度',
+  'color.reset': '重設',
+
+  // 모니터링
+  'monitor.title': '監控項目',
+  'monitor.description': '選擇滑鼠懸停時在對話框中顯示的項目。',
+  'monitor.cpu': 'CPU使用率',
+  'monitor.gpu': 'GPU使用率',
+  'monitor.memory': '記憶體使用率',
+  'monitor.network': '網路速度',
+  'monitor.battery': '電池',
+  'monitor.batteryNone': '無',
+  'monitor.chargingIcon': '顯示充電圖示',
+  'monitor.chargingIconSize': '充電圖示大小',
+  'monitor.chargingIconSizeLarge': '大',
+  'monitor.chargingIconSizeMedium': '中',
+  'monitor.chargingIconSizeSmall': '小',
+  'monitor.chargingIconSizeXSmall': '更小',
+  'monitor.chargingIconDistance': '充電圖示距離',
+
+  // 모니터링 메시지
+  'msg.addTitle': '新增監控訊息',
+  'msg.addDescription': '根據系統狀態條件設定寵物顯示的訊息。',
+  'msg.target': '對象',
+  'msg.condition': '條件',
+  'msg.value': '值',
+  'msg.priority': '優先順序',
+  'msg.priorityHelper': '越高越優先',
+  'msg.message': '訊息',
+  'msg.messagePlaceholder': '輸入要顯示的訊息 (最多50個字元)',
+  'msg.add': '新增',
+  'msg.listTitle': '已註冊訊息',
+  'msg.empty': '沒有已註冊的監控訊息。',
+  'msg.targetCpu': 'CPU',
+  'msg.targetGpu': 'GPU',
+  'msg.targetMemory': '記憶體',
+  'msg.targetBattery': '電池',
+  'msg.targetNetDown': '網路下行',
+  'msg.targetNetUp': '網路上行',
+  'msg.condGt': '大於 (>)',
+  'msg.condGe': '大於等於 (>=)',
+  'msg.condLt': '小於 (<)',
+  'msg.condLe': '小於等於 (<=)',
+  'msg.condEq': '等於 (=)',
+  'msg.badgeCpu': 'CPU',
+  'msg.badgeGpu': 'GPU',
+  'msg.badgeMemory': 'MEM',
+  'msg.badgeBattery': 'BAT',
+  'msg.badgeNetDown': 'NET↓',
+  'msg.badgeNetUp': 'NET↑',
+  'msg.rotateTitle': '訊息顯示方式',
+  'msg.showAll': '顯示所有符合的訊息',
+  'msg.rotateIntervalLabel': '輪播間隔 (秒)',
+
+  // 알림 - 표시 설정
+  'alarm.displayTitle': '顯示設定',
+  'alarm.displayDescription': '選擇移動時在對話框中顯示的文字類型。',
+  'alarm.showMonitoring': '使用監控文字',
+  'alarm.showNotification': '使用提醒文字',
+  'alarm.notificationPriority': '提醒優先',
+  'alarm.notificationPriorityDesc': '優先於監控訊息顯示。',
+  'alarm.durationLabel': '提醒顯示時間 (秒)',
+  'alarm.modeLabel': '重複提醒顯示',
+  'alarm.modeAll': '全部顯示',
+  'alarm.modeFirst': '優先顯示先收到的訊息',
+  'alarm.modeLatest': '優先顯示最新訊息',
+  'alarm.apply': '套用',
+
+  // 알림 - 추가
+  'alarm.addTitle': '新增提醒',
+  'alarm.typeLabel': '類型',
+  'alarm.typeInterval': '按間隔重複',
+  'alarm.typeAbsolute': '在特定時間提醒',
+  'alarm.typeDaily': '每天在特定時間',
+  'alarm.typeRelative': '從現在起N小時後',
+  'alarm.typeHourly': '每小時N分',
+  'alarm.intervalLabel': '間隔 (分鐘)',
+  'alarm.timeLabel': '時間',
+  'alarm.delayLabel': '延遲',
+  'alarm.hourlyLabel': '分鐘 (0~59)',
+  'alarm.messageLabel': '提醒文字',
+  'alarm.messagePlaceholder': '輸入提醒訊息 (最多50個字元)',
+  'alarm.add': '新增',
+  'alarm.unitHours': '小時',
+  'alarm.unitMinutes': '分鐘',
+
+  // 알림 - 목록
+  'alarm.listTitle': '已註冊提醒',
+  'alarm.empty': '沒有已註冊的提醒。',
+
+  // 알림 타입 라벨
+  'alarm.badge.interval': '重複',
+  'alarm.badge.absolute': '特定時間',
+  'alarm.badge.daily': '每天',
+  'alarm.badge.relative': '計時器',
+  'alarm.badge.hourly': '每小時',
+
+  // 알림 상세 텍스트
+  'alarm.detail.everyNMin': '每{n}分鐘',
+  'alarm.detail.daily': '每天 {time}',
+  'alarm.detail.hoursMinAfter': '{h}小時{m}分後',
+  'alarm.detail.hoursAfter': '{h}小時後',
+  'alarm.detail.minAfter': '{n}分鐘後',
+  'alarm.detail.hourlyAt': '每小時{n}分',
+
+  // 펫 이동
+  'sidebar.movement': '寵物移動',
+  'movement.title': '移動模式',
+  'movement.description': '選擇寵物的移動方式。',
+  'movement.basicRight': '基本移動 (右)',
+  'movement.basicRightDesc': '在工作列上方向右移動。',
+  'movement.basicLeft': '基本移動 (左)',
+  'movement.basicLeftDesc': '在工作列上方向左移動。',
+  'movement.basicBounce': '基本移動 (循環)',
+  'movement.basicBounceDesc': '移動至左右兩端後切換方向並循環。',
+  'movement.climbRight': '攀爬移動 (右)',
+  'movement.climbRightDesc': '沿著顯示器邊緣順時針巡迴。',
+  'movement.climbLeft': '攀爬移動 (左)',
+  'movement.climbLeftDesc': '沿著顯示器邊緣逆時針巡迴。',
+  'movement.random': '隨機移動',
+  'movement.randomDesc': '隨機決定方向和攀爬/穿越。',
+
+  // 일반 설정
+  'general.title': '設定',
+  'general.pollingLabel': '輪詢間隔 (秒)',
+  'general.autoStart': '自動啟動',
+  'general.mouseEnabled': '滑鼠互動',
+  'general.mouseEnabledDesc': '將滑鼠靠近寵物時切換為idle狀態並顯示監控值。',
+  'general.bubbleLabel': '使用對話框',
+  'general.bubbleSide': '顯示左右對話框',
+  'general.bubbleTop': '顯示頂部對話框',
+  'general.bubbleHeight': '對話框高度',
+  'general.apply': '套用',
+  'font.title': '字型',
+  'general.fontSize': '字型大小',
+  'general.fontFamily': '字型',
+  'font.monitoringColor': '監控訊息顏色',
+  'font.alarmColor': '提醒訊息顏色',
+  'general.language': '語言',
+  'general.langSystem': '系統語言',
+  'general.langKo': '한국어',
+  'general.langEn': 'English',
+  'general.langJa': '日本語',
+  'general.langZh': '简体中文',
+  'general.langZhHant': '繁體中文',
+  'general.fontDefault': '預設',
+
+  // 타이머
+  'sidebar.timer': '計時器',
+  'timer.title': '計時器',
+  'timer.description': '設定計時器時間並按開始按鈕。',
+  'timer.minutes': '分鐘',
+  'timer.start': '開始',
+  'timer.stop': '停止',
+  'timer.fontSize': '字型大小',
+  'timer.notice': '計時器執行期間，所有提醒和監控訊息將不會顯示。',
+
+  // 저장/가져오기
+  'export.save': '儲存',
+  'export.import': '匯入',
+  'export.confirmDelete': '現有清單將被刪除。',
+
+  // 정보
+  'sidebar.about': '關於',
+  'about.title': '關於',
+  'about.appVersion': '應用程式版本',
+  'about.updateChecking': '正在檢查更新...',
+  'about.updateAvailable': '有可用更新。',
+  'about.updateLatest': '已是最新版本。',
+  'about.updateDownloading': '正在下載...',
+  'about.updateError': '檢查更新失敗。',
+  'about.updateClickHint': '點擊下載並執行安裝程式。',
+  'about.updateNoChecksumPrompt': '此版本不包含校驗和資訊，無法驗證下載檔案的完整性。\n是否仍然繼續下載？',
+  'about.licenseTitle': '專案授權',
+  'about.licenseName': 'MIT License (需署名)',
+  'about.licenseDesc': '本專案原始碼遵循MIT授權。您可以自由使用、修改和重新發布，但在使用程式碼時必須明確標註原始出處(下方儲存庫連結)。',
+  'about.repoLabel': '原始碼儲存庫',
+  'about.assetsTitle': '圖片資源出處',
+  'about.assetsDesc': '本專案中包含的所有像素藝術精靈均來自itch.io，僅使用以允許免費使用的授權發布的資源。圖片資源不在MIT授權範圍內，受各原作者的授權約束。',
+  'about.assetsLink': '前往itch.io',
+  'about.assetsCredits': '(圖片創作者X標籤 : @ArksDigital, @LazyHamsters)',
+};
+
+// 사전 키는 type alias의 'system'을 제외한 실제 적용 가능한 언어 코드를 사용
+type ResolvedLanguage = 'ko' | 'en' | 'ja' | 'zh' | 'zh-Hant';
+const translations: Record<ResolvedLanguage, Record<string, string>> = {
+  ko,
+  en,
+  ja,
+  zh,
+  'zh-Hant': zhHant,
+};
+
+// 시스템 언어 감지: navigator.language를 기준으로 가장 가까운 지원 언어를 반환
+export function detectSystemLanguage(): ResolvedLanguage {
+  const lang = (navigator.language || '').toLowerCase();
   if (lang.startsWith('ko')) return 'ko';
+  if (lang.startsWith('ja')) return 'ja';
+  // 중국어: 번체(zh-tw/zh-hk/zh-mo/zh-hant)를 우선 검사 후 나머지는 간체로 처리
+  if (lang.startsWith('zh')) {
+    if (lang === 'zh-tw' || lang === 'zh-hk' || lang === 'zh-mo' || lang.startsWith('zh-hant')) {
+      return 'zh-Hant';
+    }
+    return 'zh';
+  }
   return 'en';
 }
 
 // 실제 적용할 언어 결정
-export function resolveLanguage(setting: Language): 'ko' | 'en' {
+export function resolveLanguage(setting: Language): ResolvedLanguage {
   if (setting === 'system') return detectSystemLanguage();
   return setting;
 }
 
 // 번역 함수 생성
-export function createT(lang: 'ko' | 'en') {
+export function createT(lang: ResolvedLanguage) {
   const dict = translations[lang] || translations['en'];
   return (key: string, params?: Record<string, string | number>): string => {
     let text = dict[key] || ko[key] || key;

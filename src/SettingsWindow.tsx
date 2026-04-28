@@ -15,6 +15,7 @@ import {
   type NotificationMode,
   type DisplayConfig,
   DEFAULT_DISPLAY_CONFIG,
+  DEFAULT_MONITOR_CONFIG,
   FONT_SIZE_OPTIONS,
   FONT_FAMILY_OPTIONS,
   FONT_COLOR_PALETTE,
@@ -28,6 +29,28 @@ import {
   formatBytes,
 } from "./types";
 
+// 업데이트 확인 상태 — 모듈 스코프에 두어 컴포넌트 매 렌더에서 재선언되지 않도록 한다.
+type UpdateStatus = 'idle' | 'checking' | 'available' | 'latest' | 'error' | 'downloading';
+type UpdateInfoDto = {
+  latest_version: string;
+  tag: string;
+  download_url: string;
+  asset_name: string;
+  // 릴리즈 노트에서 추출된 SHA256 체크섬 (없으면 null)
+  sha256: string | null;
+};
+
+// PetMessage.target → 배지 i18n 키 매핑.
+// 같은 매핑이 select option/badge/평가 분기 등 여러 곳에서 반복되지 않도록 단일 테이블로 관리.
+const MSG_TARGET_BADGE_KEY: Record<string, string> = {
+  cpu: 'msg.badgeCpu',
+  gpu: 'msg.badgeGpu',
+  memory: 'msg.badgeMemory',
+  battery: 'msg.badgeBattery',
+  network_down: 'msg.badgeNetDown',
+  network_up: 'msg.badgeNetUp',
+};
+
 export default function SettingsWindow() {
   // 설정 탭 상태
   const isDebug = import.meta.env.DEV;
@@ -35,6 +58,11 @@ export default function SettingsWindow() {
   // 앱 버전
   const [appVersion, setAppVersion] = useState<string>("");
   useEffect(() => { getVersion().then(setAppVersion); }, []);
+
+  // 업데이트 확인 상태 (정보 탭 진입 시 자동 조회)
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfoDto | null>(null);
+  const updateCheckedRef = useRef(false);
 
   // 테스트 모드 상태
   const [isTestMode, setIsTestMode] = useState(false);
@@ -83,12 +111,12 @@ export default function SettingsWindow() {
 
   // 모니터링 설정
   const [monitorConfig, setMonitorConfig] = useState<MonitorConfig>(() => {
-    const defaults: MonitorConfig = { cpu: true, memory: true, network: false, battery: false, showChargingIcon: false, chargingIconSize: 'medium', chargingIconDistance: 0 };
-    return { ...defaults, ...safeParse('monitorConfig', defaults) };
+    return { ...DEFAULT_MONITOR_CONFIG, ...safeParse('monitorConfig', DEFAULT_MONITOR_CONFIG) };
   });
 
   // 모니터링 프리뷰용 기본값 (이벤트로 업데이트하지 않음)
   const cpuUsage = 0;
+  const gpuUsage = 0;
   const memUsage = 0;
   const networkDown = 0;
   // 배터리 유무: MainWindow가 저장한 batteryPercent로 판정 (-1 또는 미저장 = 배터리 없음)
@@ -294,14 +322,14 @@ export default function SettingsWindow() {
   const handleMonitorToggle = (key: keyof MonitorConfig) => {
     const updated = { ...monitorConfig, [key]: !monitorConfig[key] };
     setMonitorConfig(updated);
-    invoke("update_monitor_config", updated);
+    invoke("update_monitor_config", { config: updated });
   };
 
   // 충전 아이콘 설정값 변경 (콤보박스용)
   const handleMonitorConfigChange = (key: keyof MonitorConfig, value: string | number) => {
     const updated = { ...monitorConfig, [key]: value };
     setMonitorConfig(updated);
-    invoke("update_monitor_config", updated);
+    invoke("update_monitor_config", { config: updated });
   };
 
   // 알림 저장 및 메인 윈도우 동기화
@@ -352,6 +380,55 @@ export default function SettingsWindow() {
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     };
   }, []);
+
+  // 정보 탭 진입 시 한 번만 GitHub Releases에서 최신 버전 확인
+  useEffect(() => {
+    if (settingsTab !== 'about') return;
+    if (updateCheckedRef.current) return;
+    updateCheckedRef.current = true;
+
+    setUpdateStatus('checking');
+    invoke<UpdateInfoDto | null>('check_update')
+      .then((info) => {
+        if (info) {
+          setUpdateInfo(info);
+          setUpdateStatus('available');
+        } else {
+          setUpdateStatus('latest');
+        }
+      })
+      .catch(() => {
+        // 네트워크 오류·API 차단 등으로 확인 실패 시에도 최신 버전으로 표시
+        setUpdateStatus('latest');
+      });
+  }, [settingsTab]);
+
+  // 업데이트 다운로드 및 인스톨러 실행 (백엔드에서 SHA256 검증 후 앱 종료까지 처리).
+  // 체크섬이 릴리즈 노트에 없으면 사용자에게 검증 생략 여부 확인 후 진행한다.
+  const handleUpdateClick = useCallback(async () => {
+    if (!updateInfo || updateStatus === 'downloading') return;
+
+    // 체크섬이 없는 경우 사용자 확인 (취소 시 다운로드 중단)
+    if (!updateInfo.sha256) {
+      const proceed = await ask(t('about.updateNoChecksumPrompt'), {
+        title: 'TaskMon',
+        kind: 'warning',
+      });
+      if (!proceed) return;
+    }
+
+    setUpdateStatus('downloading');
+    try {
+      await invoke('download_and_install_update', {
+        url: updateInfo.download_url,
+        fileName: updateInfo.asset_name,
+        expectedSha256: updateInfo.sha256,
+      });
+    } catch (e) {
+      console.error('업데이트 다운로드 실패:', e);
+      setUpdateStatus('error');
+    }
+  }, [updateInfo, updateStatus, t]);
 
   // 표시 설정 저장 및 메인 윈도우 동기화
   const saveAndSyncDisplayConfig = useCallback((newConfig: DisplayConfig) => {
@@ -955,6 +1032,11 @@ export default function SettingsWindow() {
                 <span className="monitor-preview">{cpuUsage}%</span>
               </label>
               <label className="monitor-item">
+                <input type="checkbox" checked={monitorConfig.gpu} onChange={() => handleMonitorToggle('gpu')} />
+                <span className="monitor-label">{t('monitor.gpu')}</span>
+                <span className="monitor-preview">{gpuUsage}%</span>
+              </label>
+              <label className="monitor-item">
                 <input type="checkbox" checked={monitorConfig.memory} onChange={() => handleMonitorToggle('memory')} />
                 <span className="monitor-label">{t('monitor.memory')}</span>
                 <span className="monitor-preview">{memUsage}%</span>
@@ -1062,6 +1144,7 @@ export default function SettingsWindow() {
                   <span className="setting-label">{t('msg.target')}</span>
                   <select className="alarm-select" value={msgFormTarget} onChange={(e) => setMsgFormTarget(e.target.value)}>
                     <option value="cpu">{t('msg.targetCpu')}</option>
+                    <option value="gpu">{t('msg.targetGpu')}</option>
                     <option value="memory">{t('msg.targetMemory')}</option>
                     <option value="battery">{t('msg.targetBattery')}</option>
                     <option value="network_down">{t('msg.targetNetDown')}</option>
@@ -1181,10 +1264,7 @@ export default function SettingsWindow() {
                     <div key={index} className="alarm-item">
                       <div className="alarm-item-info">
                         <span className="alarm-type-badge">
-                          {msg.target === 'cpu' ? t('msg.badgeCpu') :
-                           msg.target === 'memory' ? t('msg.badgeMemory') :
-                           msg.target === 'battery' ? t('msg.badgeBattery') :
-                           msg.target === 'network_down' ? t('msg.badgeNetDown') : t('msg.badgeNetUp')}
+                          {t(MSG_TARGET_BADGE_KEY[msg.target] ?? 'msg.badgeNetUp')}
                         </span>
                         <span className="alarm-detail">
                           {msg.condition === 'greater_than' ? '>' :
@@ -1730,6 +1810,9 @@ export default function SettingsWindow() {
                   <option value="system">{t('general.langSystem')}</option>
                   <option value="ko">{t('general.langKo')}</option>
                   <option value="en">{t('general.langEn')}</option>
+                  <option value="ja">{t('general.langJa')}</option>
+                  <option value="zh">{t('general.langZh')}</option>
+                  <option value="zh-Hant">{t('general.langZhHant')}</option>
                 </select>
               </div>
             </div>
@@ -1744,6 +1827,26 @@ export default function SettingsWindow() {
                 <span className="about-label">{t('about.appVersion')}</span>
                 <span className="about-value">v{appVersion}</span>
               </div>
+              {/* 업데이트 상태 표시: 'available'은 클릭 가능한 버튼, 그 외는 안내 텍스트 */}
+              {updateStatus === 'available' && updateInfo ? (
+                <div className="about-row">
+                  <span className="about-label"></span>
+                  <button
+                    className="about-link"
+                    onClick={handleUpdateClick}
+                    title={t('about.updateClickHint')}
+                  >
+                    {t('about.updateAvailable')} v{updateInfo.latest_version}
+                  </button>
+                </div>
+              ) : updateStatus !== 'idle' && updateStatus !== 'available' && (
+                <div className="about-row">
+                  <span className="about-label"></span>
+                  <span className={updateStatus === 'error' ? 'about-update-error' : 'about-update-text'}>
+                    {t(`about.update${updateStatus.charAt(0).toUpperCase() + updateStatus.slice(1)}`)}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="about-block">

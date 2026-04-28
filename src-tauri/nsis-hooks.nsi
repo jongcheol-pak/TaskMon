@@ -19,3 +19,9 @@
 !macro NSIS_HOOK_PREUNINSTALL
   Delete "$SMPROGRAMS\테스크몬.lnk"
 !macroend
+
+; 제거 후 설치 폴더(%LocalAppData%\TaskMon) 내 잔여 파일/폴더 모두 정리
+; WebView2 런타임이 만든 EBWebView 폴더 등 NSIS가 추적하지 않는 항목까지 함께 삭제한다.
+!macro NSIS_HOOK_POSTUNINSTALL
+  RMDir /r "$LOCALAPPDATA\TaskMon"
+!macroend

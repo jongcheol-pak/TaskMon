@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Rust / Tauri 빌드 산출물
+src-tauri/target/
+
+# 개발 중 생성된 임시 출력 파일 (cargo check 로그 등)
+src-tauri/check_output.txt

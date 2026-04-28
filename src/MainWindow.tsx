@@ -7,6 +7,7 @@ import {
   type Alarm,
   type DisplayConfig,
   DEFAULT_DISPLAY_CONFIG,
+  DEFAULT_MONITOR_CONFIG,
   getPetType,
   RANDOM_PET_ID,
   resolveRandomPetId,
@@ -23,6 +24,7 @@ export default function MainWindow() {
   const [isHovered, setIsHovered] = useState(false);
   const [isHurt, setIsHurt] = useState(false);
   const [cpuUsage, setCpuUsage] = useState(0);
+  const [gpuUsage, setGpuUsage] = useState(0);
   const [memUsage, setMemUsage] = useState(0);
   const [networkDown, setNetworkDown] = useState(0);
   const [networkUp, setNetworkUp] = useState(0);
@@ -31,8 +33,7 @@ export default function MainWindow() {
   const [isTestMode, setIsTestMode] = useState(false);
   const [testCpuValue, setTestCpuValue] = useState(50);
   const [monitorConfig, setMonitorConfig] = useState<MonitorConfig>(() => {
-    const defaults: MonitorConfig = { cpu: true, memory: true, network: false, battery: false, showChargingIcon: false, chargingIconSize: 'medium', chargingIconDistance: 0 };
-    return { ...defaults, ...safeParse('monitorConfig', defaults) };
+    return { ...DEFAULT_MONITOR_CONFIG, ...safeParse('monitorConfig', DEFAULT_MONITOR_CONFIG) };
   });
   const [runVariant, setRunVariant] = useState<number>(() => {
     const saved = localStorage.getItem('petRunVariant');
@@ -162,6 +163,10 @@ export default function MainWindow() {
 
   // 등반 이동 phase (0=Bottom, 1=ClimbRight, 2=Top, 3=DescendLeft)
   const [movePhase, setMovePhase] = useState(0);
+  // CSS rotate를 항상 단방향 -90° 보간으로 만들기 위한 사이클 카운터.
+  // Phase 3→0 정상 종료에서만 증가 → Phase 3→0 전환이 270° 장방향 회전으로 보이지 않음.
+  const phaseCycleRef = useRef(0);
+  const prevMovePhaseRef = useRef(0);
   // 이동 모드 (0=기본 오른쪽, 1=등반 오른쪽, 2=기본 왼쪽, 3=등반 왼쪽, 4=랜덤)
   const [moveMode, setMoveMode] = useState<number>(() => {
     const saved = localStorage.getItem('moveMode');
@@ -234,7 +239,7 @@ export default function MainWindow() {
     }
 
     const effectiveCpu = isTestMode ? testCpuValue : cpuUsage;
-    const matched = evaluateMessages(sortedMessages, effectiveCpu, memUsage, batteryPercent, networkDown, networkUp, monitorConfig);
+    const matched = evaluateMessages(sortedMessages, effectiveCpu, gpuUsage, memUsage, batteryPercent, networkDown, networkUp, monitorConfig);
     matchedMessagesRef.current = matched;
 
     if (!showAllMessages) {
@@ -250,7 +255,7 @@ export default function MainWindow() {
       }
       setPetMessage(matched[rotateIndexRef.current]);
     }
-  }, [cpuUsage, memUsage, batteryPercent, networkDown, networkUp, sortedMessages, isTestMode, testCpuValue, monitorConfig, showAllMessages]);
+  }, [cpuUsage, gpuUsage, memUsage, batteryPercent, networkDown, networkUp, sortedMessages, isTestMode, testCpuValue, monitorConfig, showAllMessages]);
 
   // 순환 표시 타이머: showAllMessages가 켜져 있을 때만 동작
   useEffect(() => {
@@ -409,8 +414,14 @@ export default function MainWindow() {
 
   // 메인 윈도우 전용 이벤트 리스너: 시스템 모니터링 데이터 수신
   useEffect(() => {
+    // 앱 시작 직후 사용자 모니터링 설정을 백엔드에 sync — 비활성 항목의 OS API 호출을 즉시 회피.
+    // (sync 전에는 백엔드 default 값으로 모든 항목을 측정하지만 폴링 1~2회 동안만이라 무시 가능)
+    invoke('update_monitor_config', { config: monitorConfig }).catch(() => {});
+
     const unlisten = listen<number>("cpu-usage", (event) => {
-      const newSpeed = 1 + (event.payload / 10);
+      // Rust 측 speed_multiplier(lib.rs)와 동일한 수식: 0%→1x, 50%→3x, 100%→5x
+      // 양쪽이 같은 비율로 가속되어야 펫 이동과 sprite 애니메이션이 동기화됨
+      const newSpeed = 1 + (event.payload / 25);
       speedRef.current = newSpeed;
       if (animRef.current) {
         animRef.current.playbackRate = newSpeed * speedFactorRef.current;
@@ -419,6 +430,9 @@ export default function MainWindow() {
     });
     const unlistenMem = listen<number>("memory-usage", (event) => {
       setMemUsage(event.payload);
+    });
+    const unlistenGpu = listen<number>("gpu-usage", (event) => {
+      setGpuUsage(event.payload);
     });
     const unlistenTestMode = listen<number>("test-mode-sync", (event) => {
       const usage = event.payload;
@@ -651,6 +665,7 @@ export default function MainWindow() {
     return () => {
       unlisten.then((f) => f());
       unlistenMem.then((f) => f());
+      unlistenGpu.then((f) => f());
       unlistenTestMode.then((f) => f());
       unlistenColor.then((f) => f());
       unlistenNetwork.then((f) => f());
@@ -902,19 +917,29 @@ export default function MainWindow() {
   const showMonitoring = !showTimerDisplay && bubbleEnabled && phaseBubbleAllowed && displayConfig.showMonitoringText && petMessage
     && !(displayConfig.notificationPriority && showNotification);
 
-  // 왼쪽 이동 모드 여부 (mode 2=기본 왼쪽, mode 3=등반 왼쪽, mode 4=랜덤 동적)
+  // 왼쪽 이동 모드 여부 (mode 2=기본 왼쪽, mode 3=등반 왼쪽, mode 4=랜덤 동적, mode 5=기본 이동(반복))
   const isLeftMode = (moveMode === 4 || moveMode === 5) ? randomDirLeft : moveMode >= 2;
 
+  // movePhase 변경 시 사이클 카운터 갱신 (ref만 — state 없으므로 추가 렌더 없음)
+  // 동일 movePhase로 재진입해도 if 검사로 1회만 실행되어 StrictMode 이중 호출에서도 중복 증가 없음
+  if (movePhase !== prevMovePhaseRef.current) {
+    if (prevMovePhaseRef.current === 3 && movePhase === 0) {
+      phaseCycleRef.current += 1;
+    }
+    prevMovePhaseRef.current = movePhase;
+  }
+  // 누적 회전각: 모든 phase 전환을 단방향 ±90°로 만들어 자연스러운 회전 보간
+  // CSS 개별 속성 `rotate`/`scale`은 합성 시 scale → rotate 순으로 적용됨.
+  // 좌측 모드(scale: -1 1)에서는 같은 부호로 회전하면 미러와 결합되어 펫/말풍선이
+  // 벽 안쪽(화면 밖)으로 가버리므로, 좌측 모드에서는 회전 부호를 반대(+90°)로 적용한다.
+  // scaleX 반전은 별도 scale 속성으로 분리되어 transition 미적용 → 즉시 반전 유지
+  const cumulativeRotateDeg = (isLeftMode ? 90 : -90) * (phaseCycleRef.current * 4 + movePhase);
+
   return (
-    <div className="pet-container" style={(() => {
-      // 왼쪽 모드: scaleX(-1)로 펫 좌우 반전 + phase별 회전
-      const flip = isLeftMode ? 'scaleX(-1) ' : '';
-      if (movePhase === 1) return { transform: `${flip}rotate(-90deg)` };
-      if (movePhase === 2) return { transform: `${flip}rotate(180deg)` };
-      if (movePhase === 3) return { transform: `${flip}rotate(90deg)` };
-      if (isLeftMode) return { transform: 'scaleX(-1)' };
-      return undefined;
-    })()}>
+    <div className="pet-container" style={{
+      rotate: `${cumulativeRotateDeg}deg`,
+      scale: isLeftMode ? '-1 1' : '1 1',
+    }}>
       {/* 이동(run) 중 타이머 표시: 타이머 진행 중에만 표시, idle에서는 숨김 */}
       {!isHovered && !isHurt && showTimerDisplay && (
         <div className="speech-bubble message-bubble" style={{
@@ -956,7 +981,7 @@ export default function MainWindow() {
         </div>
       )}
       {/* hover(idle) 중: 모니터링 수치 표시 */}
-      {isHovered && !isHurt && (monitorConfig.cpu || monitorConfig.memory || monitorConfig.network || monitorConfig.battery) && (
+      {isHovered && !isHurt && (monitorConfig.cpu || monitorConfig.gpu || monitorConfig.memory || monitorConfig.network || monitorConfig.battery) && (
         <div className="speech-bubble" style={{
           bottom: `${bubbleBottom}px`,
           fontSize: `${fontSize}px`,
@@ -973,6 +998,7 @@ export default function MainWindow() {
         }}>
           <div className="stat-row">
             {monitorConfig.cpu && <span>🖥 CPU {isTestMode ? `${testCpuValue}%` : `${cpuUsage}%`}</span>}
+            {monitorConfig.gpu && <span>🎮 GPU {gpuUsage}%</span>}
             {monitorConfig.memory && <span>💾 MEM {memUsage}%</span>}
             {monitorConfig.network && <span>🌐 NET {formatBytes(networkDown)}/s</span>}
             {monitorConfig.battery && batteryPercent >= 0 && <span>🔋 BAT {batteryPercent}%{batteryCharging ? ' ⚡' : ''}</span>}

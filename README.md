@@ -19,7 +19,7 @@ Tauri · React 19 · TypeScript · Rust 기반으로 만들어졌습니다.
 - 16종의 펫 캐릭터 선택 (해골, 좀비, 공룡, 몬스터, 사람, 고양이 등)
 - CPU 사용률 비례 이동 속도 (0% → 1배, 100% → 5배)
 - **6가지 이동 모드**: 기본 이동(오른쪽/왼쪽/반복), 등반 이동(오른쪽/왼쪽), 아무 곳으로 이동(랜덤)
-- 시스템 모니터링: CPU, 메모리, 네트워크 속도, 배터리 잔량
+- 시스템 모니터링: CPU, GPU, 메모리, 네트워크 속도, 배터리 잔량
 - 배터리 충전 중 캐릭터 옆에 충전 아이콘(⚡) 표시
 - 마우스 호버 시 말풍선으로 시스템 수치 또는 사용자 정의 메시지 표시
 - **5종 알림 타입**: 반복(Interval), 특정시간(Absolute), 매일(Daily), 타이머(Relative), 매시(Hourly)
@@ -27,7 +27,7 @@ Tauri · React 19 · TypeScript · Rust 기반으로 만들어졌습니다.
 - 펫 색상/크기/속도/높이 개별 커스터마이징 (펫별로 저장)
 - 캐릭터 외 빈 영역 클릭 투과 (뒤쪽 바탕화면/앱으로 클릭 통과)
 - 전체화면 앱 위에서 자동으로 뒤로 숨김
-- 다국어 UI: 한국어 / English (시스템 기본 자동 선택 가능)
+- 다국어 UI: 한국어 / English / 日本語 / 简体中文 / 繁體中文 (시스템 기본 자동 선택 가능)
 - 시스템 트레이 상주 (좌클릭/더블클릭: 설정, 우클릭: 메뉴)
 
 ## 시스템 요구 사항
@@ -40,8 +40,12 @@ Tauri · React 19 · TypeScript · Rust 기반으로 만들어졌습니다.
 ### 릴리스에서 설치
 
 1. [Releases](https://github.com/jongcheol-pak/TaskMon/releases) 페이지에서 최신 버전을 내려받습니다.
-2. NSIS 설치 파일(`TaskMon_x.x.x_x64-setup.exe`)을 실행하여 현재 사용자 계정에 설치합니다.
-3. 시작 메뉴 또는 바탕화면 바로가기로 실행합니다.
+2. (선택) 릴리스 노트의 SHA256 체크섬과 다운로드한 파일의 해시를 비교해 무결성을 검증할 수 있습니다.
+   ```powershell
+   Get-FileHash .\TaskMon-Setup-vX.Y.Z.exe -Algorithm SHA256
+   ```
+3. NSIS 설치 파일(`TaskMon-Setup-vX.Y.Z.exe`)을 실행하여 현재 사용자 계정에 설치합니다. 설치 파일은 코드 서명되어 있지 않으므로 Windows SmartScreen 경고("Windows에서 PC를 보호했습니다")가 표시될 수 있습니다. `추가 정보` → `실행`을 클릭하면 설치를 계속 진행할 수 있습니다.
+4. 시작 메뉴 또는 바탕화면 바로가기로 실행합니다.
 
 ### 소스에서 빌드
 
@@ -115,11 +119,13 @@ npm run tauri dev
   - **좌우 말풍선 표시**: 등반/하강 중(Phase 1, 3) 말풍선 표시 여부
   - **상단 말풍선 표시**: 상단 이동 중(Phase 2) 말풍선 표시 여부
   - **말풍선 높이**: 캐릭터 머리 위 말풍선 위치 조정 (0~30)
-- **언어**: 시스템 언어 / 한국어 / English
+- **언어**: 시스템 언어 / 한국어 / English / 日本語 / 简体中文 / 繁體中文
 
 ### 정보
 
 좌측 메뉴 `정보`에서 앱 버전, 프로젝트 라이선스, GitHub 저장소 링크, 이미지 에셋 출처(itch.io)와 제작자 표기를 확인할 수 있습니다. 저장소 링크와 itch.io 링크를 클릭하면 기본 브라우저로 열립니다.
+
+정보 탭에 진입하면 GitHub Releases의 최신 버전을 자동으로 확인하여 앱 버전 아래에 결과를 표시합니다. 새 버전이 있으면 `업데이트가 있습니다. v{버전}` 항목이 표시되고, 클릭하면 인스톨러(`TaskMon-Setup-v{버전}.exe`)를 사용자 `다운로드` 폴더로 받은 뒤 SHA256 무결성 검증을 거쳐 실행하고 현재 앱은 자동으로 종료됩니다. 릴리즈 노트에 체크섬이 포함되어 있으면 다운로드된 파일의 SHA256과 비교해 일치할 때만 인스톨러를 실행하며, 불일치 시 파일을 자동으로 삭제하고 오류를 표시합니다. 체크섬이 없는 릴리즈는 사용자에게 검증 생략 여부를 한 번 더 확인합니다. 다운로드 중에도 UI가 멈추지 않도록 백엔드 비동기 처리로 구현되어 있습니다.
 
 <img src="docs/screenshots/settings-about.png" alt="정보 탭" width="600" />
 
@@ -135,6 +141,7 @@ npm run tauri dev
 - [Tauri 2](https://tauri.app/) — 데스크톱 앱 프레임워크 (Rust 백엔드 + WebView 프론트엔드)
 - [React 19](https://react.dev/) — 프론트엔드 UI
 - [sysinfo](https://crates.io/crates/sysinfo) — CPU/메모리/네트워크 모니터링
+- [windows](https://crates.io/crates/windows) — GPU 사용률 측정(PDH GPU Engine 카운터)
 - [starship-battery](https://crates.io/crates/starship-battery) — 배터리 정보
 - [rand](https://crates.io/crates/rand) — 랜덤 이동 결정
 - [sys-locale](https://crates.io/crates/sys-locale) — 시스템 언어 감지

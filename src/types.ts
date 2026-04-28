@@ -430,6 +430,7 @@ export function getPetType(id: string): PetType {
 
 export interface MonitorConfig {
   cpu: boolean;
+  gpu: boolean;
   memory: boolean;
   network: boolean;
   battery: boolean;
@@ -438,11 +439,24 @@ export interface MonitorConfig {
   chargingIconDistance: number; // 충전 아이콘 거리: -5 ~ 5 (음수=가까이, 양수=멀리)
 }
 
+// 모니터링 설정 기본값 — MainWindow/SettingsWindow 양쪽 초기 state에서 공통 사용.
+// 새 필드 추가 시 두 곳에서 빠뜨리는 drift를 방지한다.
+export const DEFAULT_MONITOR_CONFIG: MonitorConfig = {
+  cpu: true,
+  gpu: false,
+  memory: true,
+  network: false,
+  battery: false,
+  showChargingIcon: false,
+  chargingIconSize: 'medium',
+  chargingIconDistance: 0,
+};
+
 // condition: 오타 방지를 위해 명확한 단어 사용
 export type MessageCondition = "less_than" | "greater_than" | "less_equal" | "greater_equal" | "equal";
 
 export interface PetMessage {
-  target: string;         // "cpu" | "memory" | "battery" | "network_down" | "network_up"
+  target: string;         // "cpu" | "gpu" | "memory" | "battery" | "network_down" | "network_up"
   condition: MessageCondition;
   value: number;
   priority: number;       // 높을수록 우선
@@ -662,6 +676,7 @@ function timeToTodayMs(hhmm: string): number {
 export function evaluateMessages(
   messages: PetMessage[],
   cpu: number,
+  gpu: number,
   mem: number,
   battery: number,
   netDown: number,
@@ -674,6 +689,9 @@ export function evaluateMessages(
       case "cpu":
         if (!config.cpu) return false;
         actual = cpu; break;
+      case "gpu":
+        if (!config.gpu) return false;
+        actual = gpu; break;
       case "memory":
         if (!config.memory) return false;
         actual = mem; break;

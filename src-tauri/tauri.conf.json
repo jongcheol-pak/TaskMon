@@ -18,6 +18,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "JongCheol Pak",
+    "copyright": "Copyright © 2026 JongCheol Pak",
+    "category": "Utility",
+    "shortDescription": "화면 하단을 달리는 픽셀 아트 데스크톱 펫 + 시스템 모니터링/알림",
+    "longDescription": "TaskMon은 작업표시줄 위를 자유롭게 이동하는 픽셀 아트 펫과 함께 CPU·메모리·네트워크·배터리를 실시간으로 모니터링하고, 사용자 정의 알림과 집중 타이머를 표시하는 Windows 데스크톱 펫 애플리케이션입니다.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -30,7 +35,7 @@
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico",
         "installerHooks": "nsis-hooks.nsi",
-        "languages": ["English"],
+        "languages": ["English", "Korean", "Japanese", "SimpChinese", "TradChinese"],
         "startMenuFolder": ""
       }
     }

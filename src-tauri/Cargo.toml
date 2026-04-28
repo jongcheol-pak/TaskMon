@@ -1,8 +1,11 @@
 [package]
 name = "taskmon"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "데스크톱 펫이 시스템 상태를 모니터링하고 알림을 표시하는 Windows 앱"
+authors = ["JongCheol Pak <jongcheol83@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/jongcheol-pak/TaskMon"
+homepage = "https://github.com/jongcheol-pak/TaskMon"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -28,6 +31,11 @@ sysinfo = "0.33"
 rand = "0.8"
 starship-battery = "0.9"
 sys-locale = "0.3"
+sha2 = "0.10"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2.4.0"
+
+# Windows 전용: PDH GPU Engine 카운터로 GPU 사용률 측정 (작업 관리자와 동일 방식)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_System_Performance", "Win32_Foundation"] }

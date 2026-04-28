@@ -4,6 +4,22 @@ use std::path::PathBuf;
 use rand::Rng;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// Windows에서 GUI 앱이 콘솔 자식 프로세스(reg, curl 등)를 spawn할 때
+/// 콘솔 창이 깜빡 뜨는 현상을 막기 위한 CreateProcess 플래그.
+/// `CommandExt::creation_flags`에 전달하여 자식에 콘솔이 할당되지 않도록 한다.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 모니터링 항목 활성 비트마스크.
+/// 사용자가 끈 항목은 백엔드 폴링 스레드에서 측정·emit을 모두 건너뛴다.
+/// CPU/메모리는 펫 이동 속도 계산 + 메시지 평가에 항상 필요하므로 flag 대상에서 제외.
+const MONITOR_FLAG_GPU: u8 = 1 << 0;
+const MONITOR_FLAG_NETWORK: u8 = 1 << 1;
+const MONITOR_FLAG_BATTERY: u8 = 1 << 2;
+/// 기본값: 모든 항목 활성. frontend가 init sync로 실제 사용자 설정을 즉시 반영한다.
+const MONITOR_FLAGS_DEFAULT: u8 =
+    MONITOR_FLAG_GPU | MONITOR_FLAG_NETWORK | MONITOR_FLAG_BATTERY;
+
 /// WebView2 사용자 데이터 디렉터리 경로 반환.
 /// 앱 설치 폴더(`%LocalAppData%\TaskMon`)와 동일한 위치를 사용하여
 /// 설치 폴더와 사용자 설정이 한 곳에서 관리되도록 한다.
@@ -41,6 +57,167 @@ fn is_fullscreen_app_running() -> bool {
 #[cfg(not(target_os = "windows"))]
 fn is_fullscreen_app_running() -> bool {
     false
+}
+
+/// GPU 사용률 모니터링 모듈 (Windows 전용).
+/// PDH(Performance Data Helper)의 `\GPU Engine(*)\Utilization Percentage` 카운터를 사용해
+/// 모든 GPU 어댑터·엔진 인스턴스의 사용률을 합산하고 100%로 캡한다.
+/// Windows 작업 관리자(taskmgr.exe)와 동일한 방식이며, NVIDIA/AMD/Intel 등 제조사 무관하게 동작한다.
+#[cfg(target_os = "windows")]
+mod gpu_monitor {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Performance::{
+        PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData,
+        PdhGetFormattedCounterArrayW, PdhOpenQueryW,
+        PDH_FMT_DOUBLE, PDH_FMT_COUNTERVALUE_ITEM_W,
+    };
+
+    // PDH 반환 코드: ERROR_SUCCESS = 0, PDH_MORE_DATA = 0x800007D2
+    const ERROR_SUCCESS: u32 = 0;
+    const PDH_MORE_DATA: u32 = 0x800007D2;
+
+    pub struct GpuMonitor {
+        query: isize,    // PDH_HQUERY는 isize의 newtype이지만 0.58에서 직접 isize 호환
+        counter: isize,  // PDH_HCOUNTER 동일
+    }
+
+    impl GpuMonitor {
+        /// PDH 쿼리를 열고 GPU Engine 카운터를 등록한다.
+        /// 첫 호출은 baseline 수집(첫 poll 직후 ~1초간 0%로 표시되는 PDH 동작 특성).
+        /// 실패 시 None을 반환하며 패닉하지 않는다(GPU 미지원 환경 호환).
+        pub fn new() -> Option<Self> {
+            unsafe {
+                let mut query: isize = 0;
+                if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != ERROR_SUCCESS {
+                    return None;
+                }
+                // 모든 GPU 어댑터의 모든 엔진 인스턴스를 매칭하는 와일드카드 경로
+                let path: Vec<u16> = "\\GPU Engine(*)\\Utilization Percentage\0"
+                    .encode_utf16()
+                    .collect();
+                let mut counter: isize = 0;
+                if PdhAddEnglishCounterW(query, PCWSTR(path.as_ptr()), 0, &mut counter)
+                    != ERROR_SUCCESS
+                {
+                    let _ = PdhCloseQuery(query);
+                    return None;
+                }
+                // baseline 수집 — 반환값 무시(첫 호출은 의미 없는 값)
+                let _ = PdhCollectQueryData(query);
+                Some(Self { query, counter })
+            }
+        }
+
+        /// 현재 시점의 GPU 사용률을 0.0~100.0 범위로 반환.
+        /// 모든 인스턴스의 사용률을 합산한 뒤 100%로 캡한다(작업 관리자 표시 방식).
+        /// 카운터 인스턴스가 없거나 측정 실패 시 None.
+        pub fn poll(&self) -> Option<f64> {
+            unsafe {
+                if PdhCollectQueryData(self.query) != ERROR_SUCCESS {
+                    return None;
+                }
+                let mut buffer_size: u32 = 0;
+                let mut item_count: u32 = 0;
+                // 1차: 필요한 버퍼 크기를 조회 (PDH_MORE_DATA 반환 예상)
+                let rc1 = PdhGetFormattedCounterArrayW(
+                    self.counter,
+                    PDH_FMT_DOUBLE,
+                    &mut buffer_size,
+                    &mut item_count,
+                    None,
+                );
+                // item_count가 0이면 GPU 카운터 인스턴스가 없는 환경(가상 머신 등)
+                if rc1 == ERROR_SUCCESS && item_count == 0 {
+                    return Some(0.0);
+                }
+                if rc1 != PDH_MORE_DATA && rc1 != ERROR_SUCCESS {
+                    return None;
+                }
+                if buffer_size == 0 || item_count == 0 {
+                    return Some(0.0);
+                }
+                // 2차: 실제 값 수집
+                let mut buffer = vec![0u8; buffer_size as usize];
+                let items_ptr = buffer.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
+                let rc2 = PdhGetFormattedCounterArrayW(
+                    self.counter,
+                    PDH_FMT_DOUBLE,
+                    &mut buffer_size,
+                    &mut item_count,
+                    Some(items_ptr),
+                );
+                if rc2 != ERROR_SUCCESS {
+                    return None;
+                }
+                let slice = std::slice::from_raw_parts(items_ptr, item_count as usize);
+                let mut total: f64 = 0.0;
+                for item in slice {
+                    let v = item.FmtValue.Anonymous.doubleValue;
+                    if v.is_finite() && v > 0.0 {
+                        total += v;
+                    }
+                }
+                // 작업 관리자와 동일하게 100%로 캡 (다중 엔진 합산 시 100%를 초과할 수 있음)
+                Some(total.min(100.0))
+            }
+        }
+    }
+
+    impl Drop for GpuMonitor {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = PdhCloseQuery(self.query);
+            }
+        }
+    }
+
+    // 단일 폴링 스레드에서만 사용하지만, 스레드 간 이동 가능하도록 Send 구현.
+    // PDH 핸들은 OS 레벨이므로 스레드 이동 자체는 안전하다.
+    unsafe impl Send for GpuMonitor {}
+}
+
+/// 비-Windows 환경용 더미 stub (모든 호출이 None 반환).
+#[cfg(not(target_os = "windows"))]
+mod gpu_monitor {
+    pub struct GpuMonitor;
+    impl GpuMonitor {
+        pub fn new() -> Option<Self> { None }
+        pub fn poll(&self) -> Option<f64> { None }
+    }
+}
+
+/// 폴링 스레드(Thread 1)의 reset 가능한 thread-local 상태 묶음.
+/// "중지→시작은 앱 재실행과 같다"는 불변식이 변수마다 여러 곳에서 중복되지 않도록
+/// 단일 `fresh()` 생성자에 초기값을 모은다. 새 변수 추가 시에도 drift가 발생하지 않는다.
+struct PollingThreadState {
+    battery_elapsed_ms: u64,        // ~3분 카운터, 178_000으로 시작해 첫 측정 ~2초 후 트리거
+    cached_battery_percent: i32,    // 배터리 잔량 캐시 (-1 = 배터리 없음/미측정)
+    prev_charging: bool,            // 충전 상태 전환 감지용
+    monitor_refresh_elapsed_ms: u64, // 10초 모니터 enumerate 카운터
+    network_refresh_elapsed_ms: u64, // 30초 NIC 인터페이스 재구성 카운터
+    prev_monitor_count: usize,      // 모니터 핫플러그 감지용
+    prev_on_fullscreen: bool,       // 전체화면 진입/이탈 감지용
+    prev_cpu_pct: i32,              // CPU emit dedup (i32::MIN = 첫 진입 sentinel)
+    prev_mem_pct: i32,              // 메모리 emit dedup
+    prev_gpu_pct: i32,              // GPU emit dedup
+}
+
+impl PollingThreadState {
+    /// 첫 진입 + 중지→시작 reset에서 공통으로 사용하는 초기 상태.
+    fn fresh() -> Self {
+        Self {
+            battery_elapsed_ms: 178_000,
+            cached_battery_percent: -1,
+            prev_charging: false,
+            monitor_refresh_elapsed_ms: 10_000,
+            network_refresh_elapsed_ms: 30_000,
+            prev_monitor_count: 0,
+            prev_on_fullscreen: false,
+            prev_cpu_pct: i32::MIN,
+            prev_mem_pct: i32::MIN,
+            prev_gpu_pct: i32::MIN,
+        }
+    }
 }
 
 /// 한 번의 EnumWindows 순회로 여러 모니터의 전체화면 여부를 동시에 체크
@@ -369,6 +546,9 @@ struct AppState {
     is_running: Arc<AtomicBool>,
     /// 현재 언어 설정 (트레이 메뉴 번역용)
     tray_language: Arc<std::sync::Mutex<String>>,
+    /// 모니터링 항목 활성 비트마스크 (GPU/NETWORK/BATTERY).
+    /// 비활성 항목은 폴링 스레드에서 측정 자체를 건너뛴다.
+    monitor_flags: Arc<AtomicU8>,
 }
 
 /// 펫 스프라이트의 실제 렌더링 너비 갱신 (CSS px 단위)
@@ -565,20 +745,33 @@ fn update_app_settings(app: AppHandle, state: State<'_, AppState>, language: Str
     }));
 }
 
+/// 프론트엔드 MonitorConfig와 1:1 대응되는 모니터링 설정 페이로드.
+/// `update_monitor_config` 인자 sprawl 방지를 위해 단일 구조체로 받는다.
+/// 직렬화 시 그대로 메인 윈도우에 emit되므로 camelCase 그대로 유지한다.
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MonitorConfigPayload {
+    cpu: bool,
+    gpu: bool,
+    memory: bool,
+    network: bool,
+    battery: bool,
+    show_charging_icon: bool,
+    charging_icon_size: String,
+    charging_icon_distance: i32,
+}
+
 #[tauri::command]
-fn update_monitor_config(app: AppHandle, cpu: bool, memory: bool, network: bool, battery: bool, show_charging_icon: bool, charging_icon_size: String, charging_icon_distance: i32) {
-    let _ = app.emit(
-        "monitor-config-update",
-        serde_json::json!({
-            "cpu": cpu,
-            "memory": memory,
-            "network": network,
-            "battery": battery,
-            "showChargingIcon": show_charging_icon,
-            "chargingIconSize": charging_icon_size,
-            "chargingIconDistance": charging_icon_distance
-        }),
-    );
+fn update_monitor_config(app: AppHandle, state: State<'_, AppState>, config: MonitorConfigPayload) {
+    // 폴링 스레드가 매 루프 시작 시 load할 비트마스크 갱신.
+    // 비활성 항목은 백엔드에서 측정·emit 모두 건너뛴다.
+    let mut flags: u8 = 0;
+    if config.gpu { flags |= MONITOR_FLAG_GPU; }
+    if config.network { flags |= MONITOR_FLAG_NETWORK; }
+    if config.battery { flags |= MONITOR_FLAG_BATTERY; }
+    state.monitor_flags.store(flags, Ordering::Relaxed);
+
+    let _ = app.emit("monitor-config-update", &config);
 }
 
 /// 자동 실행 레지스트리 조회 (async로 메인 스레드 블로킹 방지)
@@ -587,8 +780,10 @@ async fn get_auto_start() -> bool {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
+        use std::os::windows::process::CommandExt;
         let output = Command::new("reg")
             .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskMon"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
         matches!(output, Ok(o) if o.status.success())
     }
@@ -602,12 +797,14 @@ async fn set_auto_start(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
+        use std::os::windows::process::CommandExt;
         if enabled {
             // 현재 실행 파일 경로를 레지스트리에 등록
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             let exe_path = exe.to_string_lossy().to_string();
             let output = Command::new("reg")
                 .args(["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskMon", "/t", "REG_SZ", "/d", &exe_path, "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output()
                 .map_err(|e| e.to_string())?;
             if !output.status.success() {
@@ -616,6 +813,7 @@ async fn set_auto_start(enabled: bool) -> Result<(), String> {
         } else {
             let output = Command::new("reg")
                 .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "TaskMon", "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output()
                 .map_err(|e| e.to_string())?;
             if !output.status.success() {
@@ -626,6 +824,254 @@ async fn set_auto_start(enabled: bool) -> Result<(), String> {
     }
     #[cfg(not(target_os = "windows"))]
     { Ok(()) }
+}
+
+/// 업데이트 정보 (프론트엔드로 전달되는 최신 릴리즈 메타데이터)
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    /// 'v' 접두사를 제거한 버전 문자열 (예: "0.1.1")
+    latest_version: String,
+    /// 원본 태그 문자열 (예: "v0.1.1")
+    tag: String,
+    /// 인스톨러 다운로드 URL (browser_download_url)
+    download_url: String,
+    /// 자산 파일 이름 (예: "TaskMon-Setup-v0.1.1.exe")
+    asset_name: String,
+    /// 릴리즈 노트 본문에서 추출한 SHA256 체크섬(소문자 hex 64자).
+    /// 노트에 체크섬이 없으면 None.
+    sha256: Option<String>,
+}
+
+/// 릴리즈 노트 본문에서 SHA256 64자 hex 문자열을 추출한다.
+/// 비-hex 문자(공백, 구두점 등)를 구분자로 사용해 토큰 분리 → 길이 64인 hex 토큰을 첫 번째로 반환.
+/// `is_ascii_hexdigit`로 split하므로 ASCII 안전이며 외부 정규식 의존성도 없다.
+fn extract_sha256_from_body(body: &str) -> Option<String> {
+    body.split(|c: char| !c.is_ascii_hexdigit())
+        .find(|tok| tok.len() == 64)
+        .map(|s| s.to_ascii_lowercase())
+}
+
+/// 파일의 SHA256을 계산하여 소문자 hex 문자열로 반환한다.
+/// 64KB 청크 단위로 읽어 큰 인스톨러(수십 MB)도 메모리 부담 없이 처리한다.
+#[cfg(target_os = "windows")]
+fn compute_file_sha256(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("파일 열기 실패: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| format!("파일 읽기 실패: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    // String을 한 번만 할당해 32회 write로 채움 — 바이트당 format! 호출 시 발생하는 32회 미세 할당 제거.
+    let mut s = String::with_capacity(64);
+    for b in digest.iter() {
+        let _ = write!(s, "{:02x}", b);
+    }
+    Ok(s)
+}
+
+/// 'v' 접두사를 무시하고 점(.)으로 구분된 정수 버전 시퀀스로 파싱한다.
+/// 비교 시 사전식(lexicographic) 비교가 SemVer 사전식과 동일한 결과를 갖도록 한다.
+fn parse_version_components(s: &str) -> Vec<u32> {
+    s.trim_start_matches('v')
+        .split('.')
+        .filter_map(|p| p.parse::<u32>().ok())
+        .collect()
+}
+
+/// `latest`가 `current`보다 높은 버전인지 판단한다.
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    parse_version_components(latest) > parse_version_components(current)
+}
+
+/// GitHub Releases API에서 최신 릴리즈 메타데이터를 조회한다.
+/// 반환값:
+///   * `Ok(Some(UpdateInfo))` — 새 버전이 존재
+///   * `Ok(None)`              — 현재 최신 버전 사용 중
+///   * `Err(String)`           — 네트워크 오류 / 파싱 오류
+///
+/// `curl.exe`(Windows 10 1803+ 기본 포함)를 사용해 외부 의존성 추가 없이 HTTP 요청을 수행한다.
+/// async tauri::command이므로 Tauri 런타임의 워커 스레드에서 실행되어 UI 스레드를 차단하지 않는다.
+#[tauri::command]
+async fn check_update() -> Result<Option<UpdateInfo>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        use std::os::windows::process::CommandExt;
+
+        // GitHub Releases 최신 릴리즈 엔드포인트
+        const REPO_API: &str = "https://api.github.com/repos/jongcheol-pak/TaskMon/releases/latest";
+        let current_version = env!("CARGO_PKG_VERSION");
+
+        // GitHub API는 User-Agent 헤더가 없으면 403을 반환한다.
+        let output = Command::new("curl")
+            .args([
+                "-sL",
+                "-H", "User-Agent: TaskMon-UpdateCheck",
+                "-H", "Accept: application/vnd.github+json",
+                REPO_API,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("curl 실행 실패: {}", e))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "GitHub API 호출 실패: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        // 릴리즈 응답 파싱
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("응답 파싱 실패: {}", e))?;
+
+        let tag = json
+            .get("tag_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "tag_name 필드가 없습니다".to_string())?;
+
+        let latest_version = tag.trim_start_matches('v');
+
+        // 버전이 더 높지 않으면 업데이트 없음
+        if !is_newer_version(latest_version, current_version) {
+            return Ok(None);
+        }
+
+        // assets 배열에서 TaskMon-Setup-*.exe 자산 검색
+        let assets = json
+            .get("assets")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "assets 필드가 없습니다".to_string())?;
+
+        let asset = assets
+            .iter()
+            .find(|a| {
+                a.get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|n| n.starts_with("TaskMon-Setup-") && n.ends_with(".exe"))
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| "릴리즈에 TaskMon-Setup-*.exe 자산이 없습니다".to_string())?;
+
+        let asset_name = asset
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "자산 이름을 찾을 수 없습니다".to_string())?
+            .to_string();
+
+        let download_url = asset
+            .get("browser_download_url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "다운로드 URL을 찾을 수 없습니다".to_string())?
+            .to_string();
+
+        // 릴리즈 노트 본문에서 SHA256 추출 (체크섬이 없으면 None)
+        let sha256 = json
+            .get("body")
+            .and_then(|v| v.as_str())
+            .and_then(extract_sha256_from_body);
+
+        Ok(Some(UpdateInfo {
+            latest_version: latest_version.to_string(),
+            tag: tag.to_string(),
+            download_url,
+            asset_name,
+            sha256,
+        }))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(None)
+    }
+}
+
+/// 인스톨러를 임시 폴더로 다운로드한 뒤 SHA256 무결성 검증을 거쳐 실행하고 현재 앱을 종료한다.
+/// `expected_sha256`이 `Some`이면 다운로드 후 SHA256을 비교해 불일치 시 파일 삭제 + 에러 반환.
+/// `None`이면 검증을 건너뛰며 (릴리즈 노트에 체크섬이 없는 구버전 호환), 프론트엔드는 사전에 사용자에게 안내한다.
+/// async tauri::command이므로 다운로드 동안 UI 스레드가 멈추지 않는다.
+#[tauri::command]
+async fn download_and_install_update(
+    app: AppHandle,
+    url: String,
+    file_name: String,
+    expected_sha256: Option<String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        use std::os::windows::process::CommandExt;
+
+        // 사용자 다운로드 폴더에 자산 이름 그대로 저장 (예: %USERPROFILE%\Downloads\TaskMon-Setup-v0.1.1.exe)
+        // Tauri PathResolver는 Known Folder API 기반이라 사용자가 폴더 위치를 변경한 경우에도 정확한 경로 반환.
+        let download_dir = app
+            .path()
+            .download_dir()
+            .map_err(|e| format!("다운로드 폴더 경로 조회 실패: {}", e))?;
+        let installer_path = download_dir.join(&file_name);
+        let installer_path_str = installer_path.to_string_lossy().to_string();
+
+        // -L: GitHub Releases 다운로드 URL이 S3로 리다이렉트되므로 필수
+        let output = Command::new("curl")
+            .args([
+                "-sL",
+                "-H", "User-Agent: TaskMon-Update",
+                "-o", &installer_path_str,
+                &url,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("curl 실행 실패: {}", e))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "다운로드 실패: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        // SHA256 무결성 검증 (체크섬이 제공된 경우에만)
+        if let Some(expected) = expected_sha256 {
+            let expected_norm = expected.trim().to_ascii_lowercase();
+            let actual = compute_file_sha256(&installer_path)?;
+            if expected_norm != actual {
+                // 무결성 실패: 손상되었거나 변조된 파일이므로 즉시 삭제
+                let _ = std::fs::remove_file(&installer_path);
+                return Err(format!(
+                    "SHA256 무결성 검증 실패 (예상={}, 실제={})",
+                    expected_norm, actual
+                ));
+            }
+        }
+
+        // 인스톨러를 분리된 프로세스로 실행 (사용자가 NSIS 단계 진행)
+        Command::new(&installer_path)
+            .spawn()
+            .map_err(|e| format!("인스톨러 실행 실패: {}", e))?;
+
+        // 인스톨러가 안정적으로 시작할 시간을 확보한 뒤 현재 앱 종료
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            app_handle.exit(0);
+        });
+
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, url, file_name, expected_sha256);
+        Err("Windows에서만 지원됩니다".to_string())
+    }
 }
 
 /// 설정 윈도우 열기 (이미 열려있으면 포커스)
@@ -722,6 +1168,11 @@ pub fn run() {
     let teleport_x_t2 = Arc::clone(&shared_teleport_x);
     let needs_redraw_t1 = Arc::clone(&shared_needs_redraw);
     let needs_redraw_t2 = Arc::clone(&shared_needs_redraw);
+    // 트레이 시작 핸들러에서 atomic 공유 상태를 reset하기 위한 clone
+    // (앱 재실행과 동일한 초기 상태로 되돌리기 위해 사용)
+    let teleport_tray = Arc::clone(&shared_teleport_x);
+    let needs_redraw_tray = Arc::clone(&shared_needs_redraw);
+    let on_fullscreen_tray = Arc::clone(&shared_on_fullscreen);
 
     // 펫별 이동 속도 배율 (기본 1.0)
     let pet_speed_factor = Arc::new(AtomicU32::new(1.0f32.to_bits()));
@@ -743,6 +1194,10 @@ pub fn run() {
     let shared_mouse_enabled = Arc::new(AtomicBool::new(true));
     let mouse_enabled_t2 = Arc::clone(&shared_mouse_enabled);
 
+    // 모니터링 활성 비트마스크 (default: 모두 활성, frontend가 init 시 invoke로 갱신)
+    let shared_monitor_flags = Arc::new(AtomicU8::new(MONITOR_FLAGS_DEFAULT));
+    let monitor_flags_t1 = Arc::clone(&shared_monitor_flags);
+
     tauri::Builder::default()
         .manage(AppState {
             is_hovered: app_state_hover,
@@ -755,6 +1210,7 @@ pub fn run() {
             mouse_enabled: Arc::clone(&shared_mouse_enabled),
             is_running: Arc::clone(&is_running),
             tray_language: Arc::new(std::sync::Mutex::new("system".to_string())),
+            monitor_flags: Arc::clone(&shared_monitor_flags),
         })
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
             // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
@@ -828,16 +1284,28 @@ pub fn run() {
                                 }
                             }
                             "start" => {
-                                // 1. 실행 플래그 켜기 → 두 스레드 모두 다음 루프부터 동작 재개
+                                // "중지 → 시작" 동작은 앱 재실행과 동일한 초기 상태로 되돌리는 것이 목표.
+                                // (오류로 캐릭터가 이상 상태에 빠졌을 때 트레이 토글만으로 복구되도록.)
+
+                                // 1. atomic 공유 상태 reset — 두 스레드가 다음 루프에서 깨끗한 값을 보도록
+                                teleport_tray.store(i64::MIN, Ordering::Relaxed);
+                                needs_redraw_tray.store(false, Ordering::Relaxed);
+                                on_fullscreen_tray.store(false, Ordering::Relaxed);
+
+                                // 2. 실행 플래그 켜기 — 두 스레드는 prev_running false→true 전환을 감지해
+                                // 자체적으로 thread-local 변수(위치/phase/캐시 등)를 초기값으로 reset한다
                                 is_running_tray.store(true, Ordering::Relaxed);
 
-                                // 2. 창 표시 및 최상위 레이어 재적용
+                                // 3. 창 표시 및 최상위 레이어 재적용
+                                // 4. webview reload — React 모든 useState/useRef를 초기 상태로 되돌림
+                                //    (LocalStorage 사용자 설정은 유지되므로 펫·언어·알림 등 사용자 데이터는 손실 없음)
                                 if let Some(w) = app.get_webview_window("main") {
                                     let _ = w.show();
                                     let _ = w.set_always_on_top(true);
+                                    let _ = w.eval("window.location.reload()");
                                 }
 
-                                // 3. 트레이 메뉴 재빌드 (중지 메뉴만 표시)
+                                // 5. 트레이 메뉴 재빌드 (중지 메뉴만 표시)
                                 let lang = app.state::<AppState>().tray_language.lock().unwrap().clone();
                                 if let Ok(new_menu) = build_tray_menu(app, true, &lang) {
                                     if let Some(tray) = app.tray_by_id("main-tray") {
@@ -940,31 +1408,53 @@ pub fn run() {
             let teleport_writer = Arc::clone(&teleport_x_t1);
             let redraw_writer = Arc::clone(&needs_redraw_t1);
             let polling_ms_t1 = Arc::clone(&polling_interval_ms);
+            let monitor_flags_reader = Arc::clone(&monitor_flags_t1);
             std::thread::spawn(move || {
                 let mut sys = sysinfo::System::new();
                 sys.refresh_memory();
-                let mut prev_on_fullscreen = false; // set_always_on_top 중복 호출 방지
-                let mut prev_monitor_count: usize = 0; // 모니터 수 변경 감지용
 
-                // 모니터 + 전체화면 갱신 주기 (10초마다, 첫 폴링은 즉시)
-                let mut monitor_refresh_tick: u32 = 0;
-
-                // 네트워크 모니터링 초기화
+                // 네트워크 모니터링 초기화 (Networks 객체는 재시작 시 재생성하지 않음)
                 let mut networks = sysinfo::Networks::new_with_refreshed_list();
-                let mut network_refresh_tick: u32 = 0;
 
-                // 배터리 모니터링 초기화
+                // 배터리 매니저 초기화 (재시작 시 재생성하지 않음)
                 let battery_manager = starship_battery::Manager::new().ok();
-                let mut battery_elapsed_ms: u64 = 178_000; // 첫 폴링을 ~2초 후에 트리거 (180000-178000=2000ms 후)
-                let mut cached_battery_percent: i32 = -1; // 배터리 잔량 캐시 (-1 = 배터리 없음)
-                let mut prev_charging = false; // 이전 충전 상태 (변경 감지용)
+
+                // GPU 모니터링 초기화 (PDH 카운터 — Windows 작업 관리자 동일 방식)
+                // 실패 시 None으로 두고 이후 폴링에서 GPU 측정만 건너뜀
+                let gpu_mon = gpu_monitor::GpuMonitor::new();
+
+                // reset 가능한 thread-local 상태 — 첫 진입과 중지→시작이 동일한 초기값을 갖도록 단일 fresh()로 묶음.
+                let mut state = PollingThreadState::fresh();
+
+                // 중지→시작 전환 감지용 — 트레이 시작 핸들러는 atomic만 토글하고
+                // thread-local 캐시 reset은 본 스레드가 자체적으로 수행한다.
+                let mut prev_running = true;
 
                 loop {
                     // 중지 상태: 500ms 대기 후 다음 루프 (CPU/메모리 점유 없음)
-                    if !is_running_t1.load(Ordering::Relaxed) {
+                    let running = is_running_t1.load(Ordering::Relaxed);
+                    if !running {
+                        prev_running = false;
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         continue;
                     }
+
+                    // 중지→시작 전환 감지 시 thread-local 캐시를 첫 진입과 동일하게 reset.
+                    // (앱 재실행과 동일한 초기 상태로 되돌리기 위함 — 배터리 stale 등 회피)
+                    if !prev_running {
+                        state = PollingThreadState::fresh();
+                        if let Some(ref mon) = gpu_mon {
+                            // PDH 차분 baseline throwaway — 중지 기간 누적값을 버림
+                            let _ = mon.poll();
+                        }
+                    }
+                    prev_running = true;
+
+                    // 사용자 모니터링 토글 비트마스크 — 매 루프 시작 시 1회 load
+                    let flags = monitor_flags_reader.load(Ordering::Relaxed);
+                    let gpu_enabled = flags & MONITOR_FLAG_GPU != 0;
+                    let network_enabled = flags & MONITOR_FLAG_NETWORK != 0;
+                    let battery_enabled = flags & MONITOR_FLAG_BATTERY != 0;
 
                     // 1. CPU 폴링
                     sys.refresh_cpu_usage();
@@ -987,15 +1477,15 @@ pub fn run() {
 
                     cpu_usage_clone.store(usage.to_bits(), Ordering::Relaxed);
 
-                    // 2. 모니터 정보 (10초마다)
+                    // 2. 모니터 정보 (10초 절대 간격)
                     // Win32 EnumDisplayMonitors + GetDpiForMonitor로 직접 수집 — Tauri API 미경유
-                    if monitor_refresh_tick == 0 {
+                    if state.monitor_refresh_elapsed_ms >= 10_000 {
                         let new_monitors = enumerate_all_monitors();
                         if let Ok(mut cache) = monitors_clone.write() {
                             *cache = Arc::new(new_monitors);
                         }
+                        state.monitor_refresh_elapsed_ms = 0;
                     }
-                    monitor_refresh_tick = (monitor_refresh_tick + 1) % 10;
 
                     // monitors 락을 짧게 잡아 Arc 참조만 복사 → 락 해제 후 EnumWindows 실행
                     let monitors_snapshot = monitors_clone.read()
@@ -1004,7 +1494,7 @@ pub fn run() {
 
                     // 모니터 수 변경 감지: 모니터 분리/연결 시 윈도우 복구
                     let cur_monitor_count = monitors_snapshot.len();
-                    if prev_monitor_count != 0 && cur_monitor_count != prev_monitor_count {
+                    if state.prev_monitor_count != 0 && cur_monitor_count != state.prev_monitor_count {
                         // 펫이 유효한 모니터 범위 내에 있는지 확인
                         let pet_x_val = pet_x_reader.load(Ordering::Relaxed);
                         let in_bounds = monitors_snapshot.iter().any(|m| {
@@ -1029,7 +1519,7 @@ pub fn run() {
                         // Thread 2에 렌더링 갱신 요청 (SetWindowPos + RedrawWindow)
                         redraw_writer.store(true, Ordering::Relaxed);
                     }
-                    prev_monitor_count = cur_monitor_count;
+                    state.prev_monitor_count = cur_monitor_count;
 
                     // 전체화면 감지: 하이브리드 방식
                     // 1) SHQueryUserNotificationState O(1) 프리체크
@@ -1054,61 +1544,99 @@ pub fn run() {
                     on_fs_writer.store(pet_on_fullscreen, Ordering::Relaxed);
 
                     // 전체화면 상태 전환 시에만 Tauri API로 즉시 반영 (Thread 2의 다음 프레임까지 대기 방지)
-                    if pet_on_fullscreen && !prev_on_fullscreen {
+                    if pet_on_fullscreen && !state.prev_on_fullscreen {
                         let _ = window_clone_evt.set_always_on_top(false);
-                    } else if !pet_on_fullscreen && prev_on_fullscreen {
+                    } else if !pet_on_fullscreen && state.prev_on_fullscreen {
                         let _ = window_clone_evt.set_always_on_top(true);
                     }
-                    prev_on_fullscreen = pet_on_fullscreen;
+                    state.prev_on_fullscreen = pet_on_fullscreen;
 
-                    let _ = window_clone_evt.emit("cpu-usage", usage);
-                    let _ = window_clone_evt.emit("memory-usage", mem_pct);
-
-                    // 네트워크: 1초간 수신/송신 바이트 (refresh 간격 = 1초이므로 곧 bytes/sec)
-                    // 30초마다 인터페이스 목록 재구성, 그 외에는 통계만 갱신
-                    networks.refresh(network_refresh_tick == 0);
-                    network_refresh_tick = (network_refresh_tick + 1) % 30;
-                    let mut down_bytes: u64 = 0;
-                    let mut up_bytes: u64 = 0;
-                    for (_name, data) in networks.iter() {
-                        down_bytes += data.received();
-                        up_bytes += data.transmitted();
+                    // CPU/메모리/GPU emit은 정수 단위 변화가 있을 때만 전송한다.
+                    // idle 시스템에서 동일 값이 반복 emit되면 React setState → evaluateMessages가
+                    // 매초 재실행되므로 dedup으로 불필요한 렌더 사이클을 차단한다.
+                    let cpu_int = usage.round() as i32;
+                    if cpu_int != state.prev_cpu_pct {
+                        let _ = window_clone_evt.emit("cpu-usage", usage);
+                        state.prev_cpu_pct = cpu_int;
                     }
-                    let _ = window_clone_evt.emit("network-usage", serde_json::json!({
-                        "down": down_bytes,
-                        "up": up_bytes
-                    }));
+                    let mem_int = mem_pct as i32;
+                    if mem_int != state.prev_mem_pct {
+                        let _ = window_clone_evt.emit("memory-usage", mem_pct);
+                        state.prev_mem_pct = mem_int;
+                    }
 
-                    let interval = polling_ms_t1.load(Ordering::Relaxed);
-
-                    // 배터리 잔량: 최소 3분 간격, 폴링 간격이 3분 이상이면 폴링 간격으로 체크
-                    let battery_check_ms = std::cmp::max(180_000u64, interval);
-                    battery_elapsed_ms += interval;
-                    let mut battery_just_checked = false;
-                    if battery_elapsed_ms >= battery_check_ms {
-                        battery_elapsed_ms = 0;
-                        battery_just_checked = true;
-                        if let Some(ref manager) = battery_manager {
-                            if let Ok(mut batteries) = manager.batteries() {
-                                if let Some(Ok(bat)) = batteries.next() {
-                                    cached_battery_percent = (bat.state_of_charge().get::<starship_battery::units::ratio::percent>()) as i32;
+                    // GPU 사용률 폴링 — 사용자가 비활성화한 경우 PDH 호출 자체 건너뜀
+                    if gpu_enabled {
+                        if let Some(ref mon) = gpu_mon {
+                            if let Some(gpu_pct) = mon.poll() {
+                                let gpu_int = gpu_pct.round() as i32;
+                                if gpu_int != state.prev_gpu_pct {
+                                    let _ = window_clone_evt.emit("gpu-usage", gpu_int as u32);
+                                    state.prev_gpu_pct = gpu_int;
                                 }
                             }
                         }
                     }
 
-                    // 충전 상태: 매 폴링마다 확인 (GetSystemPowerStatus는 매우 가벼움)
-                    // 변경 시 또는 배터리 잔량 갱신 시에만 이벤트 발송
-                    if cached_battery_percent >= 0 {
-                        let charging = is_ac_connected();
-                        if charging != prev_charging || battery_just_checked {
-                            prev_charging = charging;
-                            let _ = window_clone_evt.emit("battery-usage", serde_json::json!({
-                                "percent": cached_battery_percent,
-                                "charging": charging
-                            }));
+                    let interval = polling_ms_t1.load(Ordering::Relaxed);
+
+                    // 네트워크: 사용자가 비활성화한 경우 NIC 통계 조회 자체 건너뜀.
+                    // 인터페이스 목록 재구성은 30초 절대 간격, 그 외에는 통계만 갱신.
+                    if network_enabled {
+                        let interface_refresh = state.network_refresh_elapsed_ms >= 30_000;
+                        networks.refresh(interface_refresh);
+                        if interface_refresh {
+                            state.network_refresh_elapsed_ms = 0;
+                        }
+                        let mut down_bytes: u64 = 0;
+                        let mut up_bytes: u64 = 0;
+                        for (_name, data) in networks.iter() {
+                            down_bytes += data.received();
+                            up_bytes += data.transmitted();
+                        }
+                        let _ = window_clone_evt.emit("network-usage", serde_json::json!({
+                            "down": down_bytes,
+                            "up": up_bytes
+                        }));
+                    }
+
+                    // 배터리: 사용자가 비활성화한 경우 starship_battery 호출 자체 건너뜀.
+                    // 측정 주기는 최소 3분 간격, 폴링 간격이 3분 이상이면 폴링 간격으로 체크.
+                    if battery_enabled {
+                        let battery_check_ms = std::cmp::max(180_000u64, interval);
+                        state.battery_elapsed_ms += interval;
+                        let mut battery_just_checked = false;
+                        if state.battery_elapsed_ms >= battery_check_ms {
+                            state.battery_elapsed_ms = 0;
+                            battery_just_checked = true;
+                            if let Some(ref manager) = battery_manager {
+                                if let Ok(mut batteries) = manager.batteries() {
+                                    if let Some(Ok(bat)) = batteries.next() {
+                                        state.cached_battery_percent = (bat.state_of_charge().get::<starship_battery::units::ratio::percent>()) as i32;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 충전 상태: 매 폴링마다 확인 (GetSystemPowerStatus는 매우 가벼움)
+                        // 변경 시 또는 배터리 잔량 갱신 시에만 이벤트 발송
+                        if state.cached_battery_percent >= 0 {
+                            let charging = is_ac_connected();
+                            if charging != state.prev_charging || battery_just_checked {
+                                state.prev_charging = charging;
+                                let _ = window_clone_evt.emit("battery-usage", serde_json::json!({
+                                    "percent": state.cached_battery_percent,
+                                    "charging": charging
+                                }));
+                            }
                         }
                     }
+
+                    // 시간 기반 tick 누적 — 모니터 enumerate / 네트워크 인터페이스 재구성 주기 보장.
+                    // (네트워크 비활성 상태에서도 누적은 유지하여 재활성 시 즉시 인터페이스 갱신되도록 한다.)
+                    state.monitor_refresh_elapsed_ms = state.monitor_refresh_elapsed_ms.saturating_add(interval);
+                    state.network_refresh_elapsed_ms = state.network_refresh_elapsed_ms.saturating_add(interval);
+
                     std::thread::sleep(std::time::Duration::from_millis(interval));
                 }
             });
@@ -1162,6 +1690,7 @@ pub fn run() {
                 let mut prev_random_dir_left: bool = !random_dir_left;
                 let mut zorder_tick: u32 = 0; // Z-order 재적용 주기 카운터 (312프레임≈5초마다)
                 let mut dir_sync_tick: u32 = 0; // 방향 동기화 재발행 카운터 (초기 이벤트 유실 복구용)
+                let mut dir_resync_after_change: u8 = 0; // 방향 변경 직후 재발행 잔여 프레임 (IPC 누락 방어)
                 let mut prev_on_fs_t2: bool = false; // Thread 2 내 전체화면 상태 변경 감지
                 let mut prev_target_x: i32 = i32::MIN; // SetWindowPos 위치 변경 감지용
                 let mut prev_target_y: i32 = i32::MIN;
@@ -1171,12 +1700,56 @@ pub fn run() {
                 let mut cross_exit_y: f64 = 0.0; // 화면 밖 판정 Y 좌표
                 let mut cross_neighbor: MonitorInfo = MonitorInfo::default(); // 건너가기 대상 모니터
                 let mut sorted_indices: Vec<usize> = Vec::with_capacity(8); // 등반 모드용 정렬 인덱스 (재사용)
+
+                // 중지→시작 전환 감지용 — 트레이 시작 핸들러는 atomic만 토글하고
+                // thread-local 변수 reset은 본 스레드가 자체적으로 수행한다.
+                let mut prev_running_t2 = true;
+
                 loop {
                     // 중지 상태: 200ms 대기 (16ms busy-loop 방지 → CPU 점유 12배 감소)
-                    if !is_running_t2.load(Ordering::Relaxed) {
+                    let running = is_running_t2.load(Ordering::Relaxed);
+                    if !running {
+                        prev_running_t2 = false;
                         std::thread::sleep(std::time::Duration::from_millis(200));
                         continue;
                     }
+
+                    // 중지→시작 전환 감지 시 thread-local 변수를 첫 진입과 동일하게 reset.
+                    // (오류로 펫이 이상한 위치/모드에 빠진 경우 트레이 시작만으로 복구되도록.)
+                    if !prev_running_t2 {
+                        move_phase = 0;
+                        prev_move_phase = 0;
+                        current_y = 0.0;
+                        climb_edge_x = 0.0;
+                        climb_top_y = 0.0;
+                        climb_bottom_y = 0.0;
+                        consecutive_climbs = 0;
+                        smooth_y = 0.0;
+                        smooth_y_init = false;
+                        prev_target_x = i32::MIN;
+                        prev_target_y = i32::MIN;
+                        prev_cursor_on_pet = false;
+                        prev_mouse_enabled = true;
+                        cross_pending = false;
+                        cross_exit_y = 0.0;
+                        cross_neighbor = MonitorInfo::default();
+                        sorted_indices.clear();
+                        dir_resync_after_change = 0;
+                        dir_sync_tick = 0;
+                        zorder_tick = 0;
+                        prev_on_fs_t2 = false;
+                        prev_scale = 1.0;
+                        random_dir_left = rng.gen_bool(0.5);
+                        prev_random_dir_left = !random_dir_left;
+                        last_update = std::time::Instant::now();
+                        // current_x를 첫 진입 시점과 동일하게 가장 왼쪽 모니터의 시작점으로 reset
+                        if let Ok(monitors_guard) = all_monitors_reader.read() {
+                            if let Some(min_m) = monitors_guard.iter().min_by_key(|m| m.x) {
+                                current_x = min_m.x as f64 - 100.0;
+                            }
+                        }
+                    }
+                    prev_running_t2 = true;
 
                     std::thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
 
@@ -1641,27 +2214,38 @@ pub fn run() {
                                 // ========================================
                                 if is_left { current_x -= movement; } else { current_x += movement; }
 
+                                // 펫 스프라이트 실제 폭 (CSS 픽셀 → 물리 픽셀)
+                                // bounce 반전을 펫의 가시 경계 기준으로 대칭화하기 위해 사용
+                                let pet_w = pet_visual_w_reader.load(Ordering::Relaxed) as f64 * prev_scale;
+                                let pet_margin = ((actual_win_w as f64 - pet_w) / 2.0).max(0.0);
+
                                 // 범위 이탈 보정
                                 if is_bounce {
-                                    // 반복 모드: 끝 도달 시 방향 전환
-                                    if is_left && current_x < (min_x as f64 - actual_win_w as f64) {
-                                        current_x = min_x as f64 - actual_win_w as f64;
+                                    // 반복 모드: 펫의 가시 끝이 모니터 끝에 닿으면 즉시 방향 전환
+                                    // (저속 CPU에서도 화면 밖 드리프트 없이 곧바로 좌우 반전이 보임)
+                                    let pet_left = current_x + pet_margin;
+                                    let pet_right = pet_left + pet_w;
+                                    if is_left && pet_left <= min_x as f64 {
+                                        current_x = min_x as f64 - pet_margin;
                                         random_dir_left = false;
-                                    } else if !is_left && current_x > (max_x as f64 - actual_win_w as f64 / 2.0) {
-                                        current_x = max_x as f64 - actual_win_w as f64 / 2.0;
+                                    } else if !is_left && pet_right >= max_x as f64 {
+                                        current_x = max_x as f64 - pet_margin - pet_w;
                                         random_dir_left = true;
                                     }
                                 } else if is_left {
-                                    // 왼쪽 이동: 좌측 끝 벗어나면 우측에서 재등장
-                                    if current_x < (min_x as f64 - actual_win_w as f64) || current_x > (max_x as f64 + actual_win_w as f64) {
+                                    // 왼쪽 이동: 좌측 끝 벗어나면 우측에서 재등장 (윈도우 완전 이탈 후)
+                                    if current_x + actual_win_w as f64 <= min_x as f64
+                                        || current_x > (max_x as f64 + actual_win_w as f64) {
                                         current_x = max_x as f64;
                                         smooth_y_init = false;
                                         needs_show = true;
                                     }
                                 } else {
-                                    // 오른쪽 이동: 우측 끝 벗어나면 좌측에서 재등장
-                                    if current_x > max_x as f64 || current_x < (min_x as f64 - 200.0) {
-                                        current_x = min_x as f64 - 100.0;
+                                    // 오른쪽 이동: 우측 끝 벗어나면 좌측에서 재등장 (윈도우 완전 이탈 후)
+                                    // 핫플러그 등으로 좌측 한참 밖으로 빠진 경우(< min_x - actual_win_w)도 동일하게 복구
+                                    if current_x >= max_x as f64
+                                        || current_x < (min_x as f64 - actual_win_w as f64) {
+                                        current_x = min_x as f64 - actual_win_w as f64;
                                         smooth_y_init = false;
                                         needs_show = true;
                                     }
@@ -1697,18 +2281,25 @@ pub fn run() {
 
                             // 동적 방향 모드(랜덤/반복): 방향 변경 이벤트 발행
                             // 변경 시 즉시 + 초기 3초간 주기적 재발행 (프론트엔드 리스너 미등록 시 이벤트 유실 복구)
+                            // + 변경 직후 6프레임(~100ms) 재발행 (저속 CPU에서도 React가 확실히 반영하도록 방어)
                             if is_random || is_bounce {
                                 let dir_changed = random_dir_left != prev_random_dir_left;
+                                if dir_changed {
+                                    dir_resync_after_change = 6;
+                                }
                                 let need_sync = dir_sync_tick < 180 && dir_sync_tick % 30 == 0; // 첫 3초간 0.5초마다
-                                if dir_changed || need_sync {
+                                let post_change_resync = dir_resync_after_change > 0;
+                                if dir_changed || need_sync || post_change_resync {
                                     let _ = window_clone.emit("move-direction", random_dir_left);
                                     prev_random_dir_left = random_dir_left;
                                 }
+                                if dir_resync_after_change > 0 { dir_resync_after_change -= 1; }
                                 dir_sync_tick += 1;
                             } else {
                                 // 비동적 방향 모드에서는 prev를 반전시켜서 동적 모드로 전환 시 즉시 발행되도록 준비
                                 prev_random_dir_left = !random_dir_left;
                                 dir_sync_tick = 0; // 동적 모드 재진입 시 동기화 재시작
+                                dir_resync_after_change = 0;
                             }
 
                             // Thread 1의 전체화면 감지용 X좌표 공유
@@ -1911,7 +2502,9 @@ pub fn run() {
             get_auto_start,
             set_auto_start,
             update_timer_state,
-            update_timer_font_size
+            update_timer_font_size,
+            check_update,
+            download_and_install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
