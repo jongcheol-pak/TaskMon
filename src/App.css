@@ -36,8 +36,7 @@ body,
   /* 말풍선 기본 폰트 */
   font-family: 'Segoe UI', sans-serif;
   font-size: 12px;
-  /* 등반/하강 phase 회전 시 부드러운 보간 (좌우 반전 scale은 별도 속성으로 분리되어 즉시 반영됨) */
-  transition: rotate 0.2s ease-out;
+  /* 회전은 즉시 반영 — 보간 중간 프레임에 펫이 비스듬히 보이는 글리치 방지 */
 }
 
 /* Idle 상태 말풍선: 캐릭터 위에 표시 (투명 배경 + 아웃라인) */
@@ -899,4 +898,93 @@ body,
 .about-update-error {
   font-size: 12px;
   color: #ff8a8a;
+}
+
+/* 메일 알림 섹션 */
+.mail-section .mail-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.mail-host-row {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+}
+.mail-host-input {
+  flex: 1;
+}
+.mail-port-input {
+  width: 80px;
+}
+.mail-error-section h4 {
+  color: #ccc;
+  font-size: 13px;
+}
+.mail-error-box {
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mail-error-auth {
+  background: #3a1414;
+  border: 1px solid #ff4757;
+  color: #ff8a8a;
+}
+.mail-error-network,
+.mail-error-protocol {
+  background: #2e2410;
+  border: 1px solid #d97f2c;
+  color: #f4b266;
+}
+.mail-status-ok {
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: #142e1a;
+  border: 1px solid #3a8048;
+  color: #8de29a;
+  font-size: 12px;
+}
+.mail-test-success {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #142e1a;
+  border: 1px solid #3a8048;
+  color: #8de29a;
+  font-size: 12px;
+  animation: mail-test-fade-in 0.2s ease-out;
+}
+@keyframes mail-test-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 메일 알림 말풍선 (펫 머리 위) — 줄 공통 ellipsis */
+.mail-bubble-header,
+.mail-bubble-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+.mail-bubble-header {
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+.mail-badge {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translate(-50%, -4px);
+  padding: 2px 6px;
+  background: rgba(255, 71, 87, 0.9);
+  color: #fff;
+  font-size: 10px;
+  font-weight: bold;
+  border-radius: 8px;
+  white-space: nowrap;
+  pointer-events: none;
 }

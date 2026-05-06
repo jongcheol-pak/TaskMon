@@ -6,6 +6,8 @@ import {
   type PetMessage,
   type Alarm,
   type DisplayConfig,
+  type MailEntry,
+  type MailNotification,
   DEFAULT_DISPLAY_CONFIG,
   DEFAULT_MONITOR_CONFIG,
   getPetType,
@@ -18,6 +20,7 @@ import {
   safeParse,
   formatBytes,
 } from "./types";
+import { type Language, createT, resolveLanguage } from "./locales";
 
 export default function MainWindow() {
   const speedRef = useRef(1);
@@ -136,6 +139,22 @@ export default function MainWindow() {
   // 알림 타이머에서 최신 알림 상태 참조용 (매초 localStorage 파싱 제거)
   const alarmsRef = useRef(alarms);
   const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 메일 알림: 현재 표시 중인 1건 + 대기 큐 (상한 20건)
+  const [activeMail, setActiveMail] = useState<MailNotification | null>(null);
+  // event handler에서 activeMail 최신 값을 동기적으로 읽기 위한 ref (StrictMode 안전)
+  const activeMailRef = useRef<MailNotification | null>(null);
+  useEffect(() => { activeMailRef.current = activeMail; }, [activeMail]);
+  const mailQueueRef = useRef<MailNotification[]>([]);
+  const [mailQueueLen, setMailQueueLen] = useState(0);
+  const MAX_MAIL_QUEUE = 20;
+
+  // 언어 설정 (메일 알림 등 동적 텍스트 번역용)
+  const [language, setLanguage] = useState<Language>(() => {
+    const saved = localStorage.getItem('language');
+    return (saved as Language) || 'system';
+  });
+  const t = useMemo(() => createT(resolveLanguage(language)), [language]);
 
   // 폰트 설정
   const [fontSize, setFontSize] = useState<number>(() => {
@@ -279,6 +298,69 @@ export default function MainWindow() {
   useEffect(() => { displayConfigRef.current = displayConfig; }, [displayConfig]);
   const bubbleEnabledRef = useRef(bubbleEnabled);
   useEffect(() => { bubbleEnabledRef.current = bubbleEnabled; }, [bubbleEnabled]);
+
+  // 메일 알림 시작 시점 (표시 시간 만료 판정용)
+  const mailStartedAtRef = useRef<number>(0);
+
+  // 큐 다음 항목으로 진행. 활성 메일이 없을 때만 dequeue.
+  // setState updater 안이 아닌 이벤트 핸들러 본문에서 호출 → StrictMode 안전.
+  const advanceMail = () => {
+    if (activeMailRef.current) {
+      setMailQueueLen(mailQueueRef.current.length);
+      return;
+    }
+    const next = mailQueueRef.current.shift() ?? null;
+    if (next) mailStartedAtRef.current = Date.now();
+    activeMailRef.current = next;
+    setActiveMail(next);
+    setMailQueueLen(mailQueueRef.current.length);
+  };
+
+  // 활성 메일을 강제로 다음 항목으로 교체 (만료/dismiss용). 활성 메일을 우선 비우고 dequeue.
+  const replaceActiveMail = () => {
+    const next = mailQueueRef.current.shift() ?? null;
+    if (next) mailStartedAtRef.current = Date.now();
+    activeMailRef.current = next;
+    setActiveMail(next);
+    setMailQueueLen(mailQueueRef.current.length);
+  };
+
+  // 메일 알림: mail-new 이벤트 listen → 큐 적재 → 표시 중 없으면 즉시 표시
+  useEffect(() => {
+    const unlistenP = listen<{ mails: MailEntry[] }>('mail-new', (e) => {
+      const mails = e.payload?.mails ?? [];
+      if (mails.length === 0) return;
+      const now = Date.now();
+      const newItems: MailNotification[] = mails.map((m, idx) => ({
+        ...m,
+        receivedAt: now + idx, // tie-break
+      }));
+      // 큐에 추가 (상한 적용 — 가장 오래된 것부터 drop)
+      mailQueueRef.current.push(...newItems);
+      if (mailQueueRef.current.length > MAX_MAIL_QUEUE) {
+        mailQueueRef.current = mailQueueRef.current.slice(-MAX_MAIL_QUEUE);
+      }
+      advanceMail();
+    });
+    return () => { unlistenP.then(fn => fn()); };
+  }, []);
+
+  // 메일 알림 표시 시간 만료 체크 (1초 간격)
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!activeMailRef.current) return;
+      const dur = displayConfigRef.current.mailDuration * 1000;
+      if (Date.now() - mailStartedAtRef.current >= dur) {
+        replaceActiveMail();
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // 메일 즉시 dismiss (좌클릭 시 호출)
+  const dismissActiveMail = () => {
+    replaceActiveMail();
+  };
 
   // 앱 시작 시 1회만 실행: 이미 조건을 만족하는 알림이 즉시 발화되지 않도록 기준 시점 초기화
   useEffect(() => {
@@ -551,9 +633,14 @@ export default function MainWindow() {
       setAlarms(merged);
     });
     // 표시 설정 동기화 (설정 윈도우 → 메인 윈도우)
-    const unlistenDisplayConfig = listen<DisplayConfig>("display-config-update", (event) => {
-      setDisplayConfig(event.payload);
-      localStorage.setItem('displayConfig', JSON.stringify(event.payload));
+    // 페이로드 누락 필드(예: 신규 추가된 mailDuration이 구버전 invoke에서 빠진 경우)에서도
+    // 기존 값을 유지하기 위해 spread merge로 부분 갱신.
+    const unlistenDisplayConfig = listen<Partial<DisplayConfig>>("display-config-update", (event) => {
+      setDisplayConfig(prev => {
+        const merged = { ...prev, ...event.payload };
+        localStorage.setItem('displayConfig', JSON.stringify(merged));
+        return merged;
+      });
     });
     // 모니터링 메시지 동기화 (설정 윈도우 → 메인 윈도우)
     const unlistenMessages = listen<PetMessage[]>("messages-update", (event) => {
@@ -572,6 +659,7 @@ export default function MainWindow() {
         setAlarmFontColor(event.payload.alarmFontColor);
         localStorage.setItem('alarmFontColor', event.payload.alarmFontColor);
       }
+      setLanguage(event.payload.language as Language);
       localStorage.setItem('language', event.payload.language);
       localStorage.setItem('fontSize', String(event.payload.fontSize));
       localStorage.setItem('fontFamily', event.payload.fontFamily);
@@ -768,8 +856,13 @@ export default function MainWindow() {
   // runVariant/selectedPetId/petScale/petUserSpeed 변경 시 애니메이션 재시작
   }, [isHovered, isHurt, isRightClickAnim, runVariant, selectedPetId, petScale, petUserSpeed]);
 
-  // 좌클릭: hurt 애니메이션 1회 재생 (idle 상태에서만)
+  // 좌클릭: 메일 알림 표시 중이면 즉시 dismiss (hover 무관). 그 외에는 hurt 애니메이션 (idle 상태에서만)
   const handleClick = () => {
+    // 메일 표시 중이면 dismiss 우선 — 시간과 무관하게 즉시 삭제
+    if (activeMail) {
+      dismissActiveMail();
+      return;
+    }
     if (isHurt || isRightClickAnim || !isHovered || currentPet.hurtFrames === 0) return;
     if (hurtTimerRef.current) clearTimeout(hurtTimerRef.current);
     setIsHurt(true);
@@ -853,7 +946,9 @@ export default function MainWindow() {
   }, [scaledW]);
 
   // 말풍선 위치: 캐릭터 머리 위 (bubbleHeight로 추가 높이 조절)
-  const bubbleBottom = scaledH - (bottomPadding > 0 ? Math.round(bottomPadding * finalScale) : 0) + bubbleHeight;
+  // Phase 2(상단 이동, -180° 회전 상태)에서는 컨테이너 회전으로 말풍선이 펫 아래에 위치하게 되는데,
+  // 메일 말풍선 같이 라인이 많은 경우 펫 본체와 시각적으로 맞닿아 겹쳐 보이므로 +6px 여백 추가.
+  const bubbleBottom = scaledH - (bottomPadding > 0 ? Math.round(bottomPadding * finalScale) : 0) + bubbleHeight + (movePhase === 2 ? 6 : 0);
 
   // 폰트 색상별 text-shadow 캐싱 (색상 변경 시에만 재계산)
   const monitoringShadow = useMemo(() => getTextShadow(monitoringFontColor), [monitoringFontColor]);
@@ -912,9 +1007,12 @@ export default function MainWindow() {
     : '';
 
   // 말풍선 표시 여부 판정 (타이머 진행 중에는 알림/모니터링 숨김)
-  const showNotification = !showTimerDisplay && bubbleEnabled && phaseBubbleAllowed && displayConfig.showNotificationText && activeNotifications.length > 0;
-  // 알림 우선 모드: 알림 표시 중에는 모니터링 문구 숨김
+  // 우선순위: 메일 > 알림 > 모니터링. 메일이 표시 중이면 다른 말풍선 숨김.
+  const showMail = !showTimerDisplay && bubbleEnabled && phaseBubbleAllowed && !!activeMail;
+  const showNotification = !showTimerDisplay && bubbleEnabled && phaseBubbleAllowed && displayConfig.showNotificationText && activeNotifications.length > 0 && !showMail;
+  // 알림 우선 모드: 알림 표시 중에는 모니터링 문구 숨김. 메일 표시 중에도 모니터링 숨김.
   const showMonitoring = !showTimerDisplay && bubbleEnabled && phaseBubbleAllowed && displayConfig.showMonitoringText && petMessage
+    && !showMail
     && !(displayConfig.notificationPriority && showNotification);
 
   // 왼쪽 이동 모드 여부 (mode 2=기본 왼쪽, mode 3=등반 왼쪽, mode 4=랜덤 동적, mode 5=기본 이동(반복))
@@ -935,6 +1033,15 @@ export default function MainWindow() {
   // scaleX 반전은 별도 scale 속성으로 분리되어 transition 미적용 → 즉시 반전 유지
   const cumulativeRotateDeg = (isLeftMode ? 90 : -90) * (phaseCycleRef.current * 4 + movePhase);
 
+  // 말풍선 transform: translateX(-50%) + phase 2 시 180° 회전 + 좌측 모드 시 scaleX(-1)
+  // 4개 말풍선(타이머/알림+모니터링/메일/idle hover)에서 동일하게 사용 → 한 번만 계산
+  const bubbleTransformStyle = useMemo(() => {
+    const parts: string[] = ['translateX(-50%)'];
+    if (movePhase === 2) parts.push('rotate(180deg)');
+    if (isLeftMode) parts.push('scaleX(-1)');
+    return parts.length > 1 ? { transform: parts.join(' ') } : {};
+  }, [movePhase, isLeftMode]);
+
   return (
     <div className="pet-container" style={{
       rotate: `${cumulativeRotateDeg}deg`,
@@ -946,13 +1053,7 @@ export default function MainWindow() {
           bottom: `${bubbleBottom}px`,
           fontSize: `${timerFontSize}px`,
           ...(fontFamily ? { fontFamily } : {}),
-          ...(() => {
-            const parts: string[] = ['translateX(-50%)'];
-            if (movePhase === 2) parts.push('rotate(180deg)');
-            if (isLeftMode) parts.push('scaleX(-1)');
-            if (parts.length > 1) return { transform: parts.join(' ') };
-            return {};
-          })(),
+          ...bubbleTransformStyle,
         }}>
           <div className="pet-message timer-text" style={{ color: monitoringFontColor, textShadow: monitoringShadow, fontVariantNumeric: 'tabular-nums' }}>{timerText}</div>
         </div>
@@ -963,20 +1064,44 @@ export default function MainWindow() {
           bottom: `${bubbleBottom}px`,
           fontSize: `${fontSize}px`,
           ...(fontFamily ? { fontFamily } : {}),
-          ...(() => {
-            // phase 2(180° 회전) + 왼쪽 모드(scaleX 반전) 보정
-            const parts: string[] = ['translateX(-50%)'];
-            if (movePhase === 2) parts.push('rotate(180deg)');
-            if (isLeftMode) parts.push('scaleX(-1)');
-            if (parts.length > 1) return { transform: parts.join(' ') };
-            return {};
-          })(),
+          ...bubbleTransformStyle,
         }}>
           {showNotification && activeNotifications.map(n => (
             <div key={n.id} className="pet-message notification-text" style={{ color: alarmFontColor, textShadow: alarmShadow }}>{n.message}</div>
           ))}
           {showMonitoring && (
             <div className="pet-message" style={{ color: monitoringFontColor, textShadow: monitoringShadow }}>{petMessage}</div>
+          )}
+        </div>
+      )}
+      {/* 메일 알림 말풍선 (모든 알림보다 우선) */}
+      {!isHovered && !isHurt && showMail && activeMail && (
+        <div className="speech-bubble message-bubble" style={{
+          bottom: `${bubbleBottom}px`,
+          fontSize: `${fontSize}px`,
+          ...(fontFamily ? { fontFamily } : {}),
+          ...bubbleTransformStyle,
+        }}>
+          {mailQueueLen >= 1 && (
+            <div className="mail-badge">{t('mail.newCount', { n: mailQueueLen })}</div>
+          )}
+          <div className="pet-message mail-bubble-header" style={{ color: alarmFontColor, textShadow: alarmShadow }}>
+            {t('mail.bubbleHeader')}
+          </div>
+          {activeMail.sent_at && (
+            <div className="pet-message mail-bubble-line" style={{ color: alarmFontColor, textShadow: alarmShadow }}>
+              {`${t('mail.bubbleReceivedAt')} : ${activeMail.sent_at}`}
+            </div>
+          )}
+          {activeMail.from && (
+            <div className="pet-message mail-bubble-line" style={{ color: alarmFontColor, textShadow: alarmShadow }}>
+              {`${t('mail.bubbleFrom')} : ${activeMail.from}`}
+            </div>
+          )}
+          {activeMail.subject && (
+            <div className="pet-message mail-bubble-line" style={{ color: alarmFontColor, textShadow: alarmShadow }}>
+              {`${t('mail.bubbleSubject')} : ${activeMail.subject}`}
+            </div>
           )}
         </div>
       )}
@@ -988,13 +1113,7 @@ export default function MainWindow() {
           color: monitoringFontColor,
           textShadow: monitoringShadow,
           ...(fontFamily ? { fontFamily } : {}),
-          ...(() => {
-            const parts: string[] = ['translateX(-50%)'];
-            if (movePhase === 2) parts.push('rotate(180deg)');
-            if (isLeftMode) parts.push('scaleX(-1)');
-            if (parts.length > 1) return { transform: parts.join(' ') };
-            return {};
-          })(),
+          ...bubbleTransformStyle,
         }}>
           <div className="stat-row">
             {monitorConfig.cpu && <span>🖥 CPU {isTestMode ? `${testCpuValue}%` : `${cpuUsage}%`}</span>}

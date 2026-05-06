@@ -493,6 +493,7 @@ export interface DisplayConfig {
   notificationPriority: boolean; // 알림 우선: 알림 표시 중에는 모니터링 문구 숨김
   notificationMode: NotificationMode; // 알림 중복 표시 모드
   notificationDuration: number;  // 알림 표시 시간(초)
+  mailDuration: number;          // 메일 알림 표시 시간(초, 1~600)
 }
 
 export const DEFAULT_DISPLAY_CONFIG: DisplayConfig = {
@@ -501,7 +502,57 @@ export const DEFAULT_DISPLAY_CONFIG: DisplayConfig = {
   notificationPriority: false,
   notificationMode: 'all',
   notificationDuration: 10,
+  mailDuration: 60,
 };
+
+// 메일 알림 설정 (UI ↔ 백엔드 IPC 단위)
+// 비밀번호는 입력 시에만 평문 전달, LocalStorage에 저장하지 않는다.
+export interface MailConfig {
+  enabled: boolean;
+  account_name: string;
+  host: string;
+  port: number;
+  use_tls: boolean;
+  user_id: string;
+  password: string;       // 빈 문자열 = "기존 저장값 유지"
+  poll_minutes: number;   // 1~60
+}
+
+export const DEFAULT_MAIL_CONFIG: MailConfig = {
+  enabled: false,
+  account_name: '',
+  host: '',
+  port: 995,
+  use_tls: true,
+  user_id: '',
+  password: '',
+  poll_minutes: 5,
+};
+
+// 백엔드 mail_load_config 응답 (비밀번호는 has_password 플래그만 전달)
+export interface MailConfigLoadResponse {
+  config: Omit<MailConfig, 'password'>;
+  has_password: boolean;
+}
+
+// 분류된 백엔드 메일 오류
+export type MailErrorPayload =
+  | { kind: 'Auth' }
+  | { kind: 'Network'; message: string }
+  | { kind: 'Protocol'; message: string };
+
+// 백엔드 mail-new 이벤트 페이로드 1건
+export interface MailEntry {
+  id: string;
+  sent_at: string;   // "HH:MM"
+  from: string;
+  subject: string;
+}
+
+// 메일 알림 큐 항목 (id 충돌 방지 위해 내부 uid 추가)
+export interface MailNotification extends MailEntry {
+  receivedAt: number;
+}
 
 // 발화된 알림 정보 (메시지 + 발화 시점)
 export interface FiredNotification {

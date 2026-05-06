@@ -1,8 +1,12 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use rand::Rng;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+mod mail;
 
 /// Windows에서 GUI 앱이 콘솔 자식 프로세스(reg, curl 등)를 spawn할 때
 /// 콘솔 창이 깜빡 뜨는 현상을 막기 위한 CreateProcess 플래그.
@@ -549,6 +553,39 @@ struct AppState {
     /// 모니터링 항목 활성 비트마스크 (GPU/NETWORK/BATTERY).
     /// 비활성 항목은 폴링 스레드에서 측정 자체를 건너뛴다.
     monitor_flags: Arc<AtomicU8>,
+    /// 메일 알림 폴링 런타임 상태 (await 경계를 넘기 위해 tokio Mutex 사용)
+    mail_runtime: Arc<tokio::sync::Mutex<MailRuntimeState>>,
+    /// 메일 폴링 즉시 트리거 (설정 변경/테스트 시)
+    mail_trigger: Arc<tokio::sync::Notify>,
+}
+
+/// 메일 폴링 태스크 런타임 상태
+struct MailRuntimeState {
+    /// 현재 적용된 설정 (없으면 폴링 안 함)
+    cfg: Option<mail::MailConfig>,
+    /// baseline UIDL → seen_at(unix timestamp). STALE_DAYS 경과 시 자동 정리.
+    last_seen: HashMap<String, i64>,
+    /// 인증 오류로 폴링 일시 정지됨 (사용자가 자격 증명 재입력 시 false로 리셋)
+    paused_due_to_auth: bool,
+    /// 마지막 폴링 결과 오류
+    last_error: Option<mail::MailError>,
+    /// 첫 폴링 여부 (baseline만 등록, 알림 발화 안 함)
+    first_poll_pending: bool,
+    /// 설정 변경 카운터 — in-flight 폴링 결과 적용 시 일치 검사
+    config_version: u64,
+}
+
+impl Default for MailRuntimeState {
+    fn default() -> Self {
+        Self {
+            cfg: None,
+            last_seen: HashMap::new(),
+            paused_due_to_auth: false,
+            last_error: None,
+            first_poll_pending: true,
+            config_version: 0,
+        }
+    }
 }
 
 /// 펫 스프라이트의 실제 렌더링 너비 갱신 (CSS px 단위)
@@ -664,15 +701,16 @@ fn update_alarm_list(app: AppHandle, alarms: serde_json::Value) {
     let _ = app.emit("alarm-list-update", alarms);
 }
 
-/// 표시 설정(모니터링/알림 문구 표시 여부, 알림 표시 시간)을 동기화
+/// 표시 설정(모니터링/알림 문구 표시 여부, 알림·메일 표시 시간)을 동기화
 #[tauri::command]
-fn update_display_config(app: AppHandle, show_monitoring: bool, show_notification: bool, notification_priority: bool, notification_mode: String, notification_duration: u32) {
+fn update_display_config(app: AppHandle, show_monitoring: bool, show_notification: bool, notification_priority: bool, notification_mode: String, notification_duration: u32, mail_duration: u32) {
     let _ = app.emit("display-config-update", serde_json::json!({
         "showMonitoringText": show_monitoring,
         "showNotificationText": show_notification,
         "notificationPriority": notification_priority,
         "notificationMode": notification_mode,
-        "notificationDuration": notification_duration
+        "notificationDuration": notification_duration,
+        "mailDuration": mail_duration
     }));
 }
 
@@ -1128,6 +1166,312 @@ fn build_tray_menu(app: &AppHandle, running: bool, lang: &str) -> tauri::Result<
     }
 }
 
+// ===== 메일 알림 (POP3) — 커맨드 + 폴링 태스크 =====
+
+/// 메일 설정 로드 (UI 초기화용). 비밀번호는 반환하지 않고 has_password 플래그만 전달
+#[tauri::command]
+fn mail_load_config() -> mail::MailConfigLoad {
+    if let Some(stored) = mail::load_stored() {
+        mail::MailConfigLoad {
+            config: stored.config,
+            has_password: !stored.password_dpapi.is_empty(),
+        }
+    } else {
+        mail::MailConfigLoad::default()
+    }
+}
+
+/// 디스크 저장 데이터를 갱신한다.
+/// password_plain_opt: Some(...)이면 새 평문 비밀번호로 DPAPI 갱신,
+///                     None이면 기존 DPAPI 비밀번호 유지
+/// new_baseline: Some(...)이면 baseline UIDL+seen_at 매핑을 갱신
+fn persist_mail(
+    new_meta: &mail::MailConfigMeta,
+    password_plain_opt: Option<&str>,
+    new_baseline: Option<&HashMap<String, i64>>,
+) -> Result<(), String> {
+    let mut stored = mail::load_stored().unwrap_or_default();
+    stored.config = new_meta.clone();
+    if let Some(plain) = password_plain_opt {
+        if plain.is_empty() {
+            stored.password_dpapi.clear();
+        } else {
+            stored.password_dpapi = mail::dpapi_protect(plain.as_bytes())?;
+        }
+    }
+    if let Some(map) = new_baseline {
+        stored.last_seen = map
+            .iter()
+            .map(|(uidl, seen_at)| mail::UidlEntry {
+                uidl: uidl.clone(),
+                seen_at: *seen_at,
+            })
+            .collect();
+        // 구버전 필드는 더 이상 사용하지 않으므로 비움
+        stored.last_seen_uidls.clear();
+    }
+    mail::save_stored(&stored)
+}
+
+/// 설정 적용 — UI 저장 버튼에서 호출.
+/// 비밀번호가 빈 문자열이면 기존 DPAPI 값 유지, 아니면 새 값으로 DPAPI 재암호화.
+/// host 또는 user_id가 직전과 다르면 baseline UIDL을 비우고 first_poll_pending을 리셋한다
+/// (다른 메일 계정으로 변경 시 새 계정의 모든 메일이 신규 알림으로 폭주하는 것을 방지).
+#[tauri::command]
+async fn mail_apply_config(
+    state: State<'_, AppState>,
+    cfg: mail::MailConfig,
+) -> Result<(), String> {
+    mail::validate_config(&cfg)?;
+    let meta = mail::meta_from_config(&cfg);
+
+    // 직전 저장된 host/user_id와 비교해 자격 증명이 바뀌었는지 판정
+    let credentials_changed = match mail::load_stored() {
+        Some(prev) => prev.config.host != meta.host || prev.config.user_id != meta.user_id,
+        None => false, // 최초 저장이라면 baseline 비교 대상 없음
+    };
+
+    // 비밀번호 처리 — 빈 문자열이면 기존값 유지
+    let password_to_persist = if cfg.password.is_empty() {
+        None
+    } else {
+        Some(cfg.password.as_str())
+    };
+
+    // 자격 증명이 바뀐 경우 디스크 baseline도 비움 (다음 폴링이 새 계정에 대해 baseline 등록부터 시작)
+    let empty_baseline: HashMap<String, i64> = HashMap::new();
+    let baseline_arg = if credentials_changed {
+        Some(&empty_baseline)
+    } else {
+        None
+    };
+    persist_mail(&meta, password_to_persist, baseline_arg)?;
+
+    // 런타임 상태 갱신
+    {
+        let mut runtime = state.mail_runtime.lock().await;
+        runtime.cfg = Some(cfg);
+        runtime.paused_due_to_auth = false;
+        runtime.last_error = None;
+        runtime.config_version = runtime.config_version.wrapping_add(1);
+        if credentials_changed {
+            runtime.last_seen.clear();
+            runtime.first_poll_pending = true;
+        }
+    }
+
+    // 즉시 1회 폴링 트리거
+    state.mail_trigger.notify_one();
+    Ok(())
+}
+
+/// 즉시 1회 연결 테스트 — 설정 화면 "테스트" 버튼용
+#[tauri::command]
+async fn mail_test_connection(cfg: mail::MailConfig) -> Result<(), mail::MailError> {
+    mail::validate_config(&cfg).map_err(mail::MailError::Network)?;
+
+    // 비밀번호가 빈 문자열이면 DPAPI에서 가져옴
+    let mut full_cfg = cfg;
+    if full_cfg.password.is_empty() {
+        if let Some(stored) = mail::load_stored() {
+            if !stored.password_dpapi.is_empty() {
+                let plain = mail::dpapi_unprotect(&stored.password_dpapi)
+                    .map_err(mail::MailError::Network)?;
+                full_cfg.password = String::from_utf8_lossy(&plain).to_string();
+            }
+        }
+    }
+
+    // 블로킹 작업 → 별도 스레드
+    let result = tokio::task::spawn_blocking(move || {
+        let empty: HashMap<String, i64> = HashMap::new();
+        // 테스트는 신규 메일 발화 안 함 (is_first_poll = true 효과)
+        mail::check_new_mails(&full_cfg, &empty, true).map(|_| ())
+    })
+    .await
+    .map_err(|e| mail::MailError::Network(format!("작업 실행 실패: {}", e)))?;
+
+    result
+}
+
+/// 비밀번호가 빈 문자열이면 디스크의 DPAPI 비밀번호로 채운다.
+/// 빈 문자열이 아니거나 저장된 비밀번호가 없으면 그대로 둔다.
+/// DPAPI 복호화 실패 시에만 Err 반환 (사용자에게 표시할 오류).
+fn decrypt_password_if_needed(cfg: &mut mail::MailConfig) -> Result<(), String> {
+    if !cfg.password.is_empty() {
+        return Ok(());
+    }
+    let stored = match mail::load_stored() {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    if stored.password_dpapi.is_empty() {
+        return Ok(());
+    }
+    let plain = mail::dpapi_unprotect(&stored.password_dpapi)?;
+    cfg.password = String::from_utf8_lossy(&plain).to_string();
+    Ok(())
+}
+
+/// 폴링 루프. enabled && !paused_due_to_auth일 때만 실제 POP3 호출
+async fn mail_polling_loop(
+    app: AppHandle,
+    runtime: Arc<tokio::sync::Mutex<MailRuntimeState>>,
+    trigger: Arc<tokio::sync::Notify>,
+    shutdown: Arc<tokio::sync::Notify>,
+) {
+    // 시작 시 디스크에서 저장된 설정/UIDL 로드 (앱 재시작 시 baseline 유지)
+    {
+        let mut rt = runtime.lock().await;
+        if let Some(stored) = mail::load_stored() {
+            // 신규 형식 baseline을 메모리 HashMap으로 적재
+            rt.last_seen = stored
+                .last_seen
+                .iter()
+                .map(|e| (e.uidl.clone(), e.seen_at))
+                .collect();
+            // 비밀번호가 저장되어 있고 enabled가 켜져 있으면 자동 폴링 시작
+            if stored.config.enabled && !stored.password_dpapi.is_empty() {
+                rt.cfg = Some(mail::MailConfig {
+                    enabled: stored.config.enabled,
+                    account_name: stored.config.account_name,
+                    host: stored.config.host,
+                    port: stored.config.port,
+                    use_tls: stored.config.use_tls,
+                    user_id: stored.config.user_id,
+                    password: String::new(), // 폴링 시 DPAPI에서 복호화
+                    poll_minutes: stored.config.poll_minutes,
+                });
+                // 첫 폴링 baseline은 디스크 값 그대로 사용 → first_poll_pending = false
+                rt.first_poll_pending = false;
+            }
+        }
+    }
+
+    loop {
+        // 폴링 시작 전 baseline에서 STALE_DAYS 이상 과거 항목 정리
+        {
+            let mut rt = runtime.lock().await;
+            mail::prune_stale(&mut rt.last_seen);
+        }
+
+        // 현재 상태 스냅샷
+        let snapshot = {
+            let rt = runtime.lock().await;
+            (
+                rt.cfg.clone(),
+                rt.last_seen.clone(),
+                rt.paused_due_to_auth,
+                rt.first_poll_pending,
+                rt.config_version,
+            )
+        };
+        let (cfg_opt, last_seen, paused, is_first_poll, version_at_start) = snapshot;
+
+        let poll_minutes = cfg_opt.as_ref().map(|c| c.poll_minutes).unwrap_or(5);
+        let should_poll = cfg_opt.as_ref().map(|c| c.enabled).unwrap_or(false) && !paused;
+
+        if should_poll {
+            if let Some(mut full_cfg) = cfg_opt {
+                // 비밀번호가 빈 문자열이면 DPAPI에서 복호화. 실패 시 에러 기록 후 다음 주기로
+                if let Err(e) = decrypt_password_if_needed(&mut full_cfg) {
+                    let mut rt = runtime.lock().await;
+                    rt.last_error = Some(mail::MailError::Network(format!(
+                        "비밀번호 복호화 실패: {}",
+                        e
+                    )));
+                    let _ = app.emit(
+                        "mail-status",
+                        serde_json::json!({"error": rt.last_error}),
+                    );
+                    drop(rt);
+                    if wait_or_shutdown(
+                        Duration::from_secs(poll_minutes as u64 * 60),
+                        &trigger,
+                        &shutdown,
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                    continue;
+                }
+
+                let cfg_for_check = full_cfg.clone();
+                let seen_for_check = last_seen.clone();
+                let join_result = tokio::task::spawn_blocking(move || {
+                    mail::check_new_mails(&cfg_for_check, &seen_for_check, is_first_poll)
+                })
+                .await;
+                // cfg_for_check / full_cfg 모두 scope 종료 시점에 MailConfig::drop으로 password 자동 wipe
+
+                let mut rt = runtime.lock().await;
+                if rt.config_version != version_at_start {
+                    // 설정이 바뀌었으면 결과 폐기 (다음 루프에서 새 설정으로 즉시 재시도)
+                    drop(rt);
+                    continue;
+                }
+
+                match join_result {
+                    Ok(Ok(outcome)) => {
+                        rt.last_error = None;
+                        rt.first_poll_pending = false;
+                        // baseline 변동 여부 판정 → 변동 시에만 디스크 저장 (불필요한 SSD 쓰기 회피)
+                        let baseline_changed = rt.last_seen != outcome.next_baseline;
+                        rt.last_seen = outcome.next_baseline.clone();
+                        let meta = rt.cfg.as_ref().map(mail::meta_from_config).unwrap_or_default();
+                        drop(rt);
+                        if baseline_changed {
+                            let _ = persist_mail(&meta, None, Some(&outcome.next_baseline));
+                        }
+                        let _ = app.emit("mail-status", serde_json::json!({"error": null}));
+                        if !outcome.new_mails.is_empty() {
+                            let _ = app.emit(
+                                "mail-new",
+                                serde_json::json!({"mails": outcome.new_mails}),
+                            );
+                        }
+                    }
+                    Ok(Err(mail::MailError::Auth)) => {
+                        rt.last_error = Some(mail::MailError::Auth);
+                        rt.paused_due_to_auth = true;
+                        let _ = app.emit(
+                            "mail-status",
+                            serde_json::json!({"error": mail::MailError::Auth}),
+                        );
+                    }
+                    Ok(Err(other)) => {
+                        rt.last_error = Some(other.clone());
+                        let _ = app.emit("mail-status", serde_json::json!({"error": other}));
+                    }
+                    Err(_) => {
+                        // spawn_blocking join 오류 — 다음 루프에서 재시도
+                    }
+                }
+            }
+        }
+
+        // 다음 폴링까지 대기 (트리거/종료 시그널 우선)
+        let sleep_dur = Duration::from_secs(poll_minutes as u64 * 60);
+        if wait_or_shutdown(sleep_dur, &trigger, &shutdown).await {
+            return;
+        }
+    }
+}
+
+/// shutdown이 오면 true 반환. trigger/sleep으로 깨어나면 false 반환.
+async fn wait_or_shutdown(
+    dur: Duration,
+    trigger: &tokio::sync::Notify,
+    shutdown: &tokio::sync::Notify,
+) -> bool {
+    tokio::select! {
+        _ = shutdown.notified() => true,
+        _ = trigger.notified() => false,
+        _ = tokio::time::sleep(dur) => false,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 윈도우 생성 전에 Per-Monitor DPI Awareness v2 설정 (최우선 실행)
@@ -1198,6 +1542,14 @@ pub fn run() {
     let shared_monitor_flags = Arc::new(AtomicU8::new(MONITOR_FLAGS_DEFAULT));
     let monitor_flags_t1 = Arc::clone(&shared_monitor_flags);
 
+    // 메일 알림 폴링 런타임
+    let mail_runtime = Arc::new(tokio::sync::Mutex::new(MailRuntimeState::default()));
+    let mail_trigger = Arc::new(tokio::sync::Notify::new());
+    let mail_shutdown = Arc::new(tokio::sync::Notify::new());
+    let mail_runtime_setup = Arc::clone(&mail_runtime);
+    let mail_trigger_setup = Arc::clone(&mail_trigger);
+    let mail_shutdown_setup = Arc::clone(&mail_shutdown);
+
     tauri::Builder::default()
         .manage(AppState {
             is_hovered: app_state_hover,
@@ -1211,6 +1563,8 @@ pub fn run() {
             is_running: Arc::clone(&is_running),
             tray_language: Arc::new(std::sync::Mutex::new("system".to_string())),
             monitor_flags: Arc::clone(&shared_monitor_flags),
+            mail_runtime: Arc::clone(&mail_runtime),
+            mail_trigger: Arc::clone(&mail_trigger),
         })
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
             // 이미 실행 중인 인스턴스가 있으면 새 프로세스는 자동 종료됨
@@ -1777,8 +2131,9 @@ pub fn run() {
 
                     // Calc movement
                     let now = std::time::Instant::now();
-                    // 시스템 부하 시 큰 점프 방지: delta_time 상한 50ms (3프레임 분량)
-                    let delta_time = now.duration_since(last_update).as_secs_f64().min(0.05);
+                    // 시스템 부하 시 큰 점프 방지: delta_time 상한 25ms (1.5프레임 분량).
+                    // 정상 60FPS(16ms)에는 영향 없음. 프레임 누락 시 한 번에 점프하는 양 절반 이하로 감소.
+                    let delta_time = now.duration_since(last_update).as_secs_f64().min(0.025);
                     last_update = now;
 
                     // CPU 사용률에 비례한 속도 (0%→1x, 50%→3x, 100%→5x)
@@ -2204,9 +2559,6 @@ pub fn run() {
                                     }
                                     let _ = window_clone.emit("move-phase", move_phase);
                                     prev_move_phase = move_phase;
-                                    // 전환 프레임: 프론트엔드 CSS 회전 적용 전까지
-                                    // SetWindowPos 호출을 건너뛰어 시각적 깜빡임 방지
-                                    continue;
                                 }
                             } else {
                                 // ========================================
@@ -2474,6 +2826,21 @@ pub fn run() {
                 }
             });
 
+            // 메일 알림 폴링 태스크 시작 (Tauri 자체 tokio 런타임에서 실행)
+            let mail_app_handle = app.handle().clone();
+            let mail_runtime_clone = Arc::clone(&mail_runtime_setup);
+            let mail_trigger_clone = Arc::clone(&mail_trigger_setup);
+            let mail_shutdown_clone = Arc::clone(&mail_shutdown_setup);
+            tauri::async_runtime::spawn(async move {
+                mail_polling_loop(
+                    mail_app_handle,
+                    mail_runtime_clone,
+                    mail_trigger_clone,
+                    mail_shutdown_clone,
+                )
+                .await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2504,8 +2871,17 @@ pub fn run() {
             update_timer_state,
             update_timer_font_size,
             check_update,
-            download_and_install_update
+            download_and_install_update,
+            mail_load_config,
+            mail_apply_config,
+            mail_test_connection
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |_app_handle, event| {
+            // 앱 종료 시 메일 폴링 태스크에 종료 시그널 전송
+            if let tauri::RunEvent::Exit = event {
+                mail_shutdown.notify_waiters();
+            }
+        });
 }

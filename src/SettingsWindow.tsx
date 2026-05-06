@@ -14,8 +14,12 @@ import {
   type Alarm,
   type NotificationMode,
   type DisplayConfig,
+  type MailConfig,
+  type MailConfigLoadResponse,
+  type MailErrorPayload,
   DEFAULT_DISPLAY_CONFIG,
   DEFAULT_MONITOR_CONFIG,
+  DEFAULT_MAIL_CONFIG,
   FONT_SIZE_OPTIONS,
   FONT_FAMILY_OPTIONS,
   FONT_COLOR_PALETTE,
@@ -28,6 +32,7 @@ import {
   safeParse,
   formatBytes,
 } from "./types";
+import { listen } from "@tauri-apps/api/event";
 
 // 업데이트 확인 상태 — 모듈 스코프에 두어 컴포넌트 매 렌더에서 재선언되지 않도록 한다.
 type UpdateStatus = 'idle' | 'checking' | 'available' | 'latest' | 'error' | 'downloading';
@@ -50,6 +55,21 @@ const MSG_TARGET_BADGE_KEY: Record<string, string> = {
   network_down: 'msg.badgeNetDown',
   network_up: 'msg.badgeNetUp',
 };
+
+// 분류된 메일 오류를 사용자 가시 텍스트로 변환.
+// switch가 MailErrorPayload union 전체를 cover하도록 하여
+// 새 kind가 추가되면 컴파일 에러로 누락을 차단한다.
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+function formatMailError(err: MailErrorPayload, t: TranslateFn): string {
+  switch (err.kind) {
+    case 'Auth':
+      return t('mail.errorAuth');
+    case 'Network':
+      return `${t('mail.errorNetworkPrefix')}: ${err.message}`;
+    case 'Protocol':
+      return `${t('mail.errorProtocolPrefix')}: ${err.message}`;
+  }
+}
 
 export default function SettingsWindow() {
   // 설정 탭 상태
@@ -203,6 +223,43 @@ export default function SettingsWindow() {
     const config = safeParse<Partial<DisplayConfig>>('displayConfig', {});
     return String(config.notificationDuration ?? DEFAULT_DISPLAY_CONFIG.notificationDuration);
   });
+  // 저장된 displayConfig에서 mailDuration 입력 상태 초기화
+  useEffect(() => {
+    const config = safeParse<Partial<DisplayConfig>>('displayConfig', {});
+    setMailDurationInput(String(config.mailDuration ?? DEFAULT_DISPLAY_CONFIG.mailDuration));
+  }, []);
+
+  // 메일 알림 설정 상태
+  const [mailConfig, setMailConfig] = useState<MailConfig>(DEFAULT_MAIL_CONFIG);
+  const [mailHasPassword, setMailHasPassword] = useState<boolean>(false);
+  const [mailError, setMailError] = useState<MailErrorPayload | null>(null);
+  const [mailTestStatus, setMailTestStatus] = useState<'idle' | 'success'>('idle');
+  const mailTestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [mailDurationInput, setMailDurationInput] = useState<string>('60');
+  // 백엔드에서 저장된 메일 설정 로드 (1회)
+  useEffect(() => {
+    invoke<MailConfigLoadResponse>('mail_load_config').then((res) => {
+      setMailConfig({
+        ...DEFAULT_MAIL_CONFIG,
+        enabled: res.config.enabled,
+        account_name: res.config.account_name,
+        host: res.config.host,
+        port: res.config.port,
+        use_tls: res.config.use_tls,
+        user_id: res.config.user_id,
+        poll_minutes: res.config.poll_minutes,
+        password: '',
+      });
+      setMailHasPassword(res.has_password);
+    }).catch(() => {});
+  }, []);
+  // 메일 오류 이벤트 listen
+  useEffect(() => {
+    const unlistenP = listen<{ error: MailErrorPayload | null }>('mail-status', (e) => {
+      setMailError(e.payload?.error ?? null);
+    });
+    return () => { unlistenP.then(fn => fn()); };
+  }, []);
 
   // 모니터링 메시지 설정 폼 상태
   const [msgFormTarget, setMsgFormTarget] = useState<string>('cpu');
@@ -440,6 +497,7 @@ export default function SettingsWindow() {
       notificationPriority: newConfig.notificationPriority,
       notificationMode: newConfig.notificationMode,
       notificationDuration: newConfig.notificationDuration,
+      mailDuration: newConfig.mailDuration,
     });
   }, []);
 
@@ -749,6 +807,11 @@ export default function SettingsWindow() {
           <li>
             <button className={`sidebar-item ${settingsTab === "alarm" ? "active" : ""}`} onClick={() => setSettingsTab("alarm")}>
               {t('sidebar.alarm')}
+            </button>
+          </li>
+          <li>
+            <button className={`sidebar-item ${settingsTab === "mail" ? "active" : ""}`} onClick={() => setSettingsTab("mail")}>
+              {t('sidebar.mail')}
             </button>
           </li>
           <li>
@@ -1571,6 +1634,193 @@ export default function SettingsWindow() {
               </div>
             </div>
           </>
+        )}
+
+        {settingsTab === "mail" && (
+          <div className="settings-section mail-section">
+            <h3>{t('mail.title')}</h3>
+            <p className="description">{t('mail.description')}</p>
+
+            {/* 메일 알림 ON/OFF */}
+            <label className="monitor-item">
+              <input
+                type="checkbox"
+                checked={mailConfig.enabled}
+                onChange={(e) => setMailConfig({ ...mailConfig, enabled: e.target.checked })}
+              />
+              <span className="monitor-label">{t('mail.enable')}</span>
+            </label>
+
+            {/* 입력 필드 */}
+            <div className="mail-form">
+              <div className="alarm-form-row">
+                <span className="setting-label">{t('mail.accountName')}</span>
+                <input
+                  type="text"
+                  className="alarm-message-input"
+                  value={mailConfig.account_name}
+                  onChange={(e) => setMailConfig({ ...mailConfig, account_name: e.target.value })}
+                />
+              </div>
+              <div className="alarm-form-row">
+                <span className="setting-label">{t('mail.pop3Host')}</span>
+                <div className="mail-host-row">
+                  <input
+                    type="text"
+                    className="alarm-message-input mail-host-input"
+                    value={mailConfig.host}
+                    onChange={(e) => setMailConfig({ ...mailConfig, host: e.target.value })}
+                  />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    className="polling-input mail-port-input"
+                    value={String(mailConfig.port)}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value.replace(/[^0-9]/g, ''), 10);
+                      setMailConfig({ ...mailConfig, port: isNaN(v) ? 0 : Math.min(65535, v) });
+                    }}
+                    aria-label={t('mail.pop3Port')}
+                  />
+                </div>
+              </div>
+              <label className="monitor-item">
+                <input
+                  type="checkbox"
+                  checked={mailConfig.use_tls}
+                  onChange={(e) => {
+                    const useTls = e.target.checked;
+                    // SSL 토글 시 권장 포트 자동 보정 (사용자가 이미 다른 포트로 변경한 경우는 유지)
+                    let port = mailConfig.port;
+                    if (useTls && (port === 110 || port === 0)) port = 995;
+                    if (!useTls && port === 995) port = 110;
+                    setMailConfig({ ...mailConfig, use_tls: useTls, port });
+                  }}
+                />
+                <span className="monitor-label">{t('mail.useTls')}</span>
+              </label>
+              <div className="alarm-form-row">
+                <span className="setting-label">{t('mail.userId')}</span>
+                <input
+                  type="text"
+                  className="alarm-message-input"
+                  value={mailConfig.user_id}
+                  onChange={(e) => setMailConfig({ ...mailConfig, user_id: e.target.value })}
+                />
+              </div>
+              <div className="alarm-form-row">
+                <span className="setting-label">{t('mail.password')}</span>
+                <input
+                  type="password"
+                  className="alarm-message-input"
+                  value={mailConfig.password}
+                  placeholder={mailHasPassword ? '••••••••' : ''}
+                  onChange={(e) => setMailConfig({ ...mailConfig, password: e.target.value })}
+                />
+              </div>
+              {mailHasPassword && mailConfig.password === '' && (
+                <p className="description" style={{ marginLeft: '4px', marginTop: '-4px' }}>
+                  {t('mail.passwordKept')}
+                </p>
+              )}
+              <div className="alarm-form-row">
+                <span className="setting-label">{t('mail.pollMinutes')}</span>
+                <select
+                  className="alarm-select"
+                  value={mailConfig.poll_minutes}
+                  onChange={(e) => setMailConfig({ ...mailConfig, poll_minutes: parseInt(e.target.value, 10) })}
+                >
+                  {Array.from({ length: 60 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="alarm-form-row">
+                <span className="setting-label">{t('mail.bubbleDuration')}</span>
+                <div className="polling-control">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    className="polling-input"
+                    value={mailDurationInput}
+                    onChange={(e) => setMailDurationInput(e.target.value.replace(/[^0-9]/g, ''))}
+                  />
+                </div>
+              </div>
+              <p className="description" style={{ marginTop: '-4px' }}>{t('mail.priorityDesc')}</p>
+              <p className="description" style={{ marginTop: '-4px' }}>{t('mail.firstPollNotice')}</p>
+
+              <div className="export-import-buttons" style={{ marginTop: '8px' }}>
+                <button
+                  className="polling-apply"
+                  onClick={async () => {
+                    try {
+                      await invoke('mail_test_connection', { cfg: mailConfig });
+                      // 성공 메시지를 별도 영역에 표시하고 3초 후 자동 사라짐
+                      setMailTestStatus('success');
+                      if (mailTestTimerRef.current) clearTimeout(mailTestTimerRef.current);
+                      mailTestTimerRef.current = setTimeout(() => {
+                        setMailTestStatus('idle');
+                        mailTestTimerRef.current = null;
+                      }, 3000);
+                    } catch (e) {
+                      const err = e as MailErrorPayload | string;
+                      if (typeof err === 'object' && err !== null && 'kind' in err) {
+                        setMailError(err as MailErrorPayload);
+                      } else {
+                        setMailError({ kind: 'Network', message: String(err) });
+                      }
+                    }
+                  }}
+                >
+                  {t('mail.test')}
+                </button>
+                <button
+                  className="polling-apply"
+                  onClick={async () => {
+                    // 표시 시간 검증 후 displayConfig 갱신
+                    const dur = Math.max(1, Math.min(600, parseInt(mailDurationInput, 10) || 60));
+                    setMailDurationInput(String(dur));
+                    const updated = { ...displayConfig, mailDuration: dur };
+                    saveAndSyncDisplayConfig(updated);
+                    // 메일 설정 저장 (백엔드 DPAPI + 폴링 시작)
+                    try {
+                      await invoke('mail_apply_config', { cfg: mailConfig });
+                      // 비밀번호 입력 필드 클리어 — 다음 저장 시 빈 값이면 기존 유지
+                      if (mailConfig.password) {
+                        setMailHasPassword(true);
+                        setMailConfig({ ...mailConfig, password: '' });
+                      }
+                      setMailError(null);
+                    } catch (e) {
+                      setMailError({ kind: 'Network', message: String(e) });
+                    }
+                  }}
+                >
+                  {t('mail.save')}
+                </button>
+              </div>
+
+              {/* 테스트 성공 메시지 (3초 자동 사라짐, 폴링 상태와 독립) */}
+              {mailTestStatus === 'success' && (
+                <div className="mail-test-success">{t('mail.testSuccess')}</div>
+              )}
+            </div>
+
+            {/* 오류/상태 섹션 */}
+            <div className="mail-error-section" style={{ marginTop: '16px' }}>
+              <h4 style={{ margin: '8px 0' }}>{t('mail.errorSection')}</h4>
+              {mailError ? (
+                <div className={`mail-error-box mail-error-${mailError.kind.toLowerCase()}`}>
+                  {formatMailError(mailError, t)}
+                </div>
+              ) : (
+                <div className="mail-status-ok">{t('mail.statusOk')}</div>
+              )}
+            </div>
+          </div>
         )}
 
         {settingsTab === "timer" && (

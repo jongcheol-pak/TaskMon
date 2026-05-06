@@ -1,6 +1,6 @@
 [package]
 name = "taskmon"
-version = "0.1.0"
+version = "0.2.0"
 description = "데스크톱 펫이 시스템 상태를 모니터링하고 알림을 표시하는 Windows 앱"
 authors = ["JongCheol Pak <jongcheol83@gmail.com>"]
 license = "MIT"
@@ -32,10 +32,18 @@ rand = "0.8"
 starship-battery = "0.9"
 sys-locale = "0.3"
 sha2 = "0.10"
+# 메일 알림(POP3) 기능: TLS 연결 + MIME 헤더 파싱 + 평문 비밀번호 메모리 와이프
+native-tls = "0.2"
+mailparse = "0.15"
+base64 = "0.22"
+encoding_rs = "0.8"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+# Tauri는 tokio를 자체 의존하지만 우리 코드에서 sync/time API를 직접 쓰므로 명시적으로 추가
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2.4.0"
 
-# Windows 전용: PDH GPU Engine 카운터로 GPU 사용률 측정 (작업 관리자와 동일 방식)
+# Windows 전용: PDH GPU Engine 카운터(GPU 사용률) + DPAPI(비밀번호 암호화)
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Win32_System_Performance", "Win32_Foundation"] }
+windows = { version = "0.58", features = ["Win32_System_Performance", "Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_Time"] }

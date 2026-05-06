@@ -23,6 +23,7 @@ Tauri · React 19 · TypeScript · Rust 기반으로 만들어졌습니다.
 - 배터리 충전 중 캐릭터 옆에 충전 아이콘(⚡) 표시
 - 마우스 호버 시 말풍선으로 시스템 수치 또는 사용자 정의 메시지 표시
 - **5종 알림 타입**: 반복(Interval), 특정시간(Absolute), 매일(Daily), 타이머(Relative), 매시(Hourly)
+- POP3 메일 알림 (신규 메일 도착 시 펫 위에 시간/보낸사람/제목 표시, 비밀번호는 Windows DPAPI로 암호화 저장)
 - 1~60분 집중 타이머 (캐릭터 위 MM:SS 카운트다운 표시)
 - 펫 색상/크기/속도/높이 개별 커스터마이징 (펫별로 저장)
 - 캐릭터 외 빈 영역 클릭 투과 (뒤쪽 바탕화면/앱으로 클릭 통과)
@@ -97,7 +98,9 @@ npm run tauri dev
 
    <img src="docs/screenshots/bubble-notification.png" alt="펫 말풍선 알림" width="280" />
 
-8. **타이머** — 좌측 메뉴 `타이머`에서 1~60분 집중 타이머를 시작합니다. 시작 후에는 캐릭터 위에 MM:SS 카운트다운이 표시되고, 진행 중에는 모든 알림과 모니터링 메시지가 숨겨집니다. 마우스를 펫에 가까이 가져가면 기존 모니터링 수치가 표시됩니다.
+8. **메일 알림** — 좌측 메뉴 `메일 알림`에서 POP3 서버를 등록하면 1~60분 간격으로 신규 메일을 확인하고, 새 메일 도착 시 펫 머리 위에 `📧 메일 도착` 헤더와 함께 `받은 시간 / 보낸 사람 / 제목`을 라벨 형식의 말풍선으로 표시합니다. 메일 도착 시점이 90일 이상 지난 메일은 알림으로 표시되지 않으며, 보관된 메일 식별자도 90일 기준으로 자동 정리됩니다. 표시 시간은 초 단위 1~600초로 설정 가능하며, 모든 알림 중 가장 우선 표시됩니다. 메시지 표시 중 펫을 좌클릭하면 즉시 닫히고 다음 메일이 있으면 이어서 표시됩니다. 신규 메일이 2건 이상이면 말풍선 위쪽에 `새메일+N` 배지가 표시됩니다. 아이디·비밀번호가 잘못된 경우에는 폴링이 자동으로 정지되어 불필요한 시도를 막고, 일반적인 네트워크 오류는 다음 주기에 자동 재시도됩니다. 비밀번호는 Windows DPAPI로 암호화되어 사용자 계정 키에 묶여 저장되므로 다른 사용자/PC에서는 복호화되지 않습니다.
+
+9. **타이머** — 좌측 메뉴 `타이머`에서 1~60분 집중 타이머를 시작합니다. 시작 후에는 캐릭터 위에 MM:SS 카운트다운이 표시되고, 진행 중에는 모든 알림과 모니터링 메시지가 숨겨집니다. 마우스를 펫에 가까이 가져가면 기존 모니터링 수치가 표시됩니다.
 
    <img src="docs/screenshots/settings-timer.png" alt="타이머" width="600" />
 
@@ -134,6 +137,7 @@ npm run tauri dev
 | 항목 | 저장 위치 |
 |---|---|
 | 사용자 설정 (펫/색상/모니터링/알림/메시지 등) | 앱 내부 LocalStorage (`%LocalAppData%\TaskMon\EBWebView\Default\Local Storage\`) |
+| 메일 알림 자격 증명 + UIDL baseline (DPAPI 암호화) | `%LocalAppData%\TaskMon\mail_secret.bin` |
 | 자동 실행 등록 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\TaskMon` |
 
 ## 주요 의존성
@@ -141,10 +145,13 @@ npm run tauri dev
 - [Tauri 2](https://tauri.app/) — 데스크톱 앱 프레임워크 (Rust 백엔드 + WebView 프론트엔드)
 - [React 19](https://react.dev/) — 프론트엔드 UI
 - [sysinfo](https://crates.io/crates/sysinfo) — CPU/메모리/네트워크 모니터링
-- [windows](https://crates.io/crates/windows) — GPU 사용률 측정(PDH GPU Engine 카운터)
+- [windows](https://crates.io/crates/windows) — GPU 사용률 측정(PDH GPU Engine 카운터) + DPAPI 비밀번호 암호화
 - [starship-battery](https://crates.io/crates/starship-battery) — 배터리 정보
 - [rand](https://crates.io/crates/rand) — 랜덤 이동 결정
 - [sys-locale](https://crates.io/crates/sys-locale) — 시스템 언어 감지
+- [native-tls](https://crates.io/crates/native-tls) — POP3 SSL/TLS 연결
+- [mailparse](https://crates.io/crates/mailparse) — 메일 헤더(MIME/RFC 2047) 파싱
+- [zeroize](https://crates.io/crates/zeroize) — 평문 비밀번호 메모리 와이프
 
 ## 라이선스
 
